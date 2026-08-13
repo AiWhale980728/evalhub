@@ -39,9 +39,9 @@ async function waitForEvaluation(baseUrl, id) {
 test("API provides health, redacts keys, and rejects cross-origin writes", async (t) => {
   const { server, baseUrl } = await fixture(); t.after(() => server.close());
   assert.equal((await json(await fetch(`${baseUrl}/api/health`))).ok, true);
-  const created = await json(await fetch(`${baseUrl}/api/connections`, { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ name: "Example", provider: "openai", baseUrl: "https://example.test/v1", apiKey: "sk-test-secret-value", models: ["model-a"] }) }));
-  assert.equal(created.keySuffix, "alue");
-  assert.equal(JSON.stringify(created).includes("sk-test-secret-value"), false);
+  const created = await json(await fetch(`${baseUrl}/api/connections`, { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ name: "Example", provider: "openai", baseUrl: "https://example.test/v1", apiKey: "example-credential-placeholder", models: ["model-a"] }) }));
+  assert.equal(created.keySuffix, "lder");
+  assert.equal(JSON.stringify(created).includes("example-credential-placeholder"), false);
   const stateResponse = await fetch(`${baseUrl}/api/state`);
   const stateText = await stateResponse.text();
   assert.equal(stateText.includes("encryptedApiKey"), false);

@@ -8,7 +8,7 @@ import { request as httpRequest } from "node:http";
 import { JsonStore } from "../server/store.mjs";
 import { createApp } from "../server/app.mjs";
 
-async function fixture() {
+async function fixture({ demo = false } = {}) {
   const directory = await mkdtemp(path.join(tmpdir(), "evalhub-api-"));
   const staticDir = path.join(directory, "dist");
   await mkdir(staticDir);
@@ -18,6 +18,7 @@ async function fixture() {
   const server = createApp({ store, key: randomBytes(32), staticDir });
   await new Promise((resolve) => server.listen(0, "127.0.0.1", resolve));
   const baseUrl = `http://127.0.0.1:${server.address().port}`;
+  if (demo) await json(await fetch(`${baseUrl}/api/demo`, { method: "POST" }));
   return { directory, store, server, baseUrl };
 }
 
@@ -50,15 +51,43 @@ test("API provides health, redacts keys, and rejects cross-origin writes", async
   assert.equal(blocked.status, 403);
 });
 
-test("API validates 2–8 models and completes mock evaluation, review, and CSV export", async (t) => {
+test("fresh installs are empty and optional demo assets load idempotently", async (t) => {
   const { server, baseUrl } = await fixture(); t.after(() => server.close());
+  let state = await json(await fetch(`${baseUrl}/api/state`));
+  assert.deepEqual(state.connections, []);
+  assert.deepEqual(state.datasets, []);
+  assert.deepEqual(state.evaluations, []);
+
+  const first = await json(await fetch(`${baseUrl}/api/demo`, { method: "POST" }));
+  const second = await json(await fetch(`${baseUrl}/api/demo`, { method: "POST" }));
+  assert.deepEqual(second, first);
+  state = await json(await fetch(`${baseUrl}/api/state`));
+  assert.equal(state.connections.length, 1);
+  assert.equal(state.connections[0].id, "connection-mock");
+  assert.equal(state.datasets.length, 1);
+  assert.equal(state.datasets[0].id, "dataset-demo-rag");
+  assert.equal(state.evaluations.length, 0);
+
+  assert.equal((await fetch(`${baseUrl}/api/datasets/dataset-demo-rag`, { method: "DELETE" })).status, 204);
+  assert.equal((await fetch(`${baseUrl}/api/connections/connection-mock`, { method: "DELETE" })).status, 204);
+  state = await json(await fetch(`${baseUrl}/api/state`));
+  assert.deepEqual(state.connections, []);
+  assert.deepEqual(state.datasets, []);
+  assert.deepEqual(state.evaluations, []);
+});
+
+test("API validates 2–8 models and completes mock evaluation, review, and CSV export", async (t) => {
+  const { server, baseUrl } = await fixture({ demo: true }); t.after(() => server.close());
   const state = await json(await fetch(`${baseUrl}/api/state`));
   const basePayload = { name: "Lifecycle", datasetId: state.datasets[0].id, models: [], concurrency: 8 };
   for (const count of [1, 9]) {
     const response = await fetch(`${baseUrl}/api/evaluations`, { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ ...basePayload, models: Array.from({ length: count }, (_, index) => ({ connectionId: "connection-mock", model: `mock-${index}` })) }) });
     assert.equal(response.status, 400);
   }
-  const created = await json(await fetch(`${baseUrl}/api/evaluations`, { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ ...basePayload, models: [{ connectionId: "connection-mock", model: "mock-balanced", key: "balanced" }, { connectionId: "connection-mock", model: "mock-safe", key: "safe" }] }) }));
+  const created = await json(await fetch(`${baseUrl}/api/evaluations`, { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ ...basePayload, models: [{ connectionId: "connection-mock", model: "mock-balanced", key: "balanced", temperature: 0.1, maxTokens: 321, topP: 0.8, seed: 42, stopSequences: "END|###" }, { connectionId: "connection-mock", model: "mock-safe", key: "safe", temperature: 1.2, maxTokens: 654, topK: 20 }] }) }));
+  assert.equal(created.models[0].temperature, 0.1);
+  assert.equal(created.models[1].temperature, 1.2);
+  assert.deepEqual(created.models[0].stopSequences, ["END", "###"]);
   const completed = await waitForEvaluation(baseUrl, created.id);
   assert.equal(completed.status, "completed");
   assert.equal(completed.results.length, state.datasets[0].cases.length * 2);
@@ -73,6 +102,23 @@ test("API validates 2–8 models and completes mock evaluation, review, and CSV 
   assert.match(await report.text(), /case_id,model,score/);
   const deletion = await fetch(`${baseUrl}/api/connections/connection-mock`, { method: "DELETE" });
   assert.equal(deletion.status, 409);
+});
+
+test("dataset editing, settings, and completed-task deletion are persistent", async (t) => {
+  const { server, baseUrl } = await fixture({ demo: true }); t.after(() => server.close());
+  let state = await json(await fetch(`${baseUrl}/api/state`));
+  assert.equal(state.settings.passScore, 8);
+  const settings = await json(await fetch(`${baseUrl}/api/settings`, { method: "PUT", headers: { "content-type": "application/json" }, body: JSON.stringify({ defaultConcurrency: 7, defaultTimeoutMs: 45000, passScore: 8.5, reviewScore: 6, retentionDays: 120 }) }));
+  assert.equal(settings.defaultConcurrency, 7);
+  const dataset = state.datasets[0];
+  const updated = await json(await fetch(`${baseUrl}/api/datasets/${dataset.id}`, { method: "PUT", headers: { "content-type": "application/json" }, body: JSON.stringify({ ...dataset, cases: [...dataset.cases, { id: "TC-999", input: "新增用例", expectedKeywords: ["新增"], tags: ["测试"] }] }) }));
+  assert.equal(updated.cases.at(-1).id, "TC-999");
+  const run = await json(await fetch(`${baseUrl}/api/evaluations`, { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ name: "Disposable", datasetId: dataset.id, models: [{ connectionId: "connection-mock", model: "mock-balanced" }, { connectionId: "connection-mock", model: "mock-safe" }] }) }));
+  await waitForEvaluation(baseUrl, run.id);
+  assert.equal((await fetch(`${baseUrl}/api/evaluations/${run.id}`, { method: "DELETE" })).status, 204);
+  state = await json(await fetch(`${baseUrl}/api/state`));
+  assert.equal(state.evaluations.some((item) => item.id === run.id), false);
+  assert.equal(state.settings.retentionDays, 120);
 });
 
 test("production static server handles assets, SPA fallback, and traversal safely", async (t) => {

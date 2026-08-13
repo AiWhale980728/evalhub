@@ -21,6 +21,9 @@ test("JSON store persists atomically and public connections redact secrets", asy
   const directory = await mkdtemp(path.join(tmpdir(), "evalhub-store-"));
   const file = path.join(directory, "state.json");
   const store = await new JsonStore(file).init();
+  assert.deepEqual(store.snapshot().connections, []);
+  assert.deepEqual(store.snapshot().datasets, []);
+  assert.deepEqual(store.snapshot().evaluations, []);
   const encryptedApiKey = encryptSecret("example-credential-placeholder", randomBytes(32));
   await store.mutate((state) => state.connections.push({ id: "private", name: "Private", provider: "openai", baseUrl: "https://example.test", encryptedApiKey, keySuffix: "-use", models: ["test"] }));
   const disk = JSON.parse(await readFile(file, "utf8"));

@@ -11,14 +11,16 @@ management, parallel runs, review, and export.
 ## What it includes
 
 - 2–8 model comparison with responsive matrix, grid, and focused views
+- Independent Temperature, Max Tokens, Top P, Top K, penalties, seed, stop sequences, and System Prompt for every selected model
 - Multiple model versions under the same provider connection
 - OpenAI, Anthropic, Gemini, and OpenAI-compatible endpoints
-- A built-in offline Mock provider for trying the full workflow without an API key
+- An optional offline Mock provider and synthetic dataset, loaded only on request
 - CSV, JSON, and JSONL dataset import
 - Parallel execution with timeout and concurrency controls
 - Keyword heuristic scoring and optional LLM-as-a-Judge fallback
 - Latency, token, and configurable cost estimates
 - Human review notes and CSV report export
+- Functional workspaces for overview, datasets, test cases, tasks, model management, failure analysis, metrics, reports, review, and system settings
 - Local JSON persistence and AES-256-GCM encryption for API keys
 
 ## Quick start
@@ -31,8 +33,9 @@ npm run dev
 ```
 
 Open `http://localhost:4173`. The web interface and local API run together.
-The built-in dataset and Mock models make it possible to run an evaluation
-immediately.
+
+EvalHub starts with an empty workspace. It does not automatically create model
+connections, datasets, evaluation history, or sample scores.
 
 For a production-style local build:
 
@@ -42,6 +45,22 @@ npm start
 ```
 
 Open `http://localhost:8787`.
+
+## First use
+
+1. Open **Model Management → API Connections** and add a provider, API key,
+   and one or more model IDs.
+2. Open **Datasets** and import CSV, JSON, or JSONL test cases.
+3. Create an evaluation and select 2–8 models. Models from the same provider
+   connection can be compared together.
+4. Optionally override inference parameters for each selected model, then run
+   the evaluation.
+5. Review the matrix, failures, metrics, human-review queue, and CSV report.
+
+To explore EvalHub without a provider key, use **Load removable demo project**
+from the empty overview. This explicit action adds an offline Mock connection
+and a synthetic support dataset. It does not add evaluation history or
+fabricated scores, and both demo assets can be deleted before real use.
 
 ## Docker
 

@@ -40,7 +40,7 @@ export async function testProvider(connection, apiKey) {
   return { ok: true, models: (body.data || body.models || []).map((item) => item.id || item.name).filter(Boolean) };
 }
 
-export async function invokeModel({ connection, apiKey, model, input, systemPrompt, temperature = 0.2, maxTokens = 1024, timeoutMs = DEFAULT_TIMEOUT }) {
+export async function invokeModel({ connection, apiKey, model, input, systemPrompt, temperature = 0.2, maxTokens = 1024, topP, topK, presencePenalty, frequencyPenalty, seed, stopSequences = [], timeoutMs = DEFAULT_TIMEOUT }) {
   const started = performance.now();
   if (connection.provider === "mock") {
     await new Promise((resolve) => setTimeout(resolve, model.includes("fast") ? 40 : 90));
@@ -48,13 +48,13 @@ export async function invokeModel({ connection, apiKey, model, input, systemProm
     return { text, inputTokens: Math.ceil((input.length + (systemPrompt?.length || 0)) / 3), outputTokens: Math.ceil(text.length / 3), latencyMs: Math.round(performance.now() - started), finishReason: "stop" };
   }
   if (connection.provider === "anthropic") {
-    const body = await requestJson(endpoint(connection.baseUrl, "/v1/messages"), { method: "POST", headers: { "content-type": "application/json", "x-api-key": apiKey, "anthropic-version": "2023-06-01" }, body: JSON.stringify({ model, system: systemPrompt || undefined, messages: [{ role: "user", content: input }], temperature, max_tokens: maxTokens }) }, timeoutMs);
+    const body = await requestJson(endpoint(connection.baseUrl, "/v1/messages"), { method: "POST", headers: { "content-type": "application/json", "x-api-key": apiKey, "anthropic-version": "2023-06-01" }, body: JSON.stringify({ model, system: systemPrompt || undefined, messages: [{ role: "user", content: input }], temperature, max_tokens: maxTokens, top_p: topP ?? undefined, top_k: topK ?? undefined, stop_sequences: stopSequences.length ? stopSequences : undefined }) }, timeoutMs);
     return { text: (body.content || []).map((item) => item.text || "").join("\n"), inputTokens: body.usage?.input_tokens || 0, outputTokens: body.usage?.output_tokens || 0, latencyMs: Math.round(performance.now() - started), finishReason: body.stop_reason || "stop" };
   }
   if (connection.provider === "gemini") {
-    const body = await requestJson(endpoint(connection.baseUrl, `/v1beta/models/${encodeURIComponent(model)}:generateContent?key=${encodeURIComponent(apiKey)}`), { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ systemInstruction: systemPrompt ? { parts: [{ text: systemPrompt }] } : undefined, contents: [{ role: "user", parts: [{ text: input }] }], generationConfig: { temperature, maxOutputTokens: maxTokens } }) }, timeoutMs);
+    const body = await requestJson(endpoint(connection.baseUrl, `/v1beta/models/${encodeURIComponent(model)}:generateContent?key=${encodeURIComponent(apiKey)}`), { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ systemInstruction: systemPrompt ? { parts: [{ text: systemPrompt }] } : undefined, contents: [{ role: "user", parts: [{ text: input }] }], generationConfig: { temperature, maxOutputTokens: maxTokens, topP: topP ?? undefined, topK: topK ?? undefined, stopSequences: stopSequences.length ? stopSequences : undefined } }) }, timeoutMs);
     return { text: body.candidates?.[0]?.content?.parts?.map((part) => part.text || "").join("\n") || "", inputTokens: body.usageMetadata?.promptTokenCount || 0, outputTokens: body.usageMetadata?.candidatesTokenCount || 0, latencyMs: Math.round(performance.now() - started), finishReason: body.candidates?.[0]?.finishReason || "stop" };
   }
-  const body = await requestJson(endpoint(connection.baseUrl, "/chat/completions"), { method: "POST", headers: { "content-type": "application/json", authorization: `Bearer ${apiKey}` }, body: JSON.stringify({ model, messages: [...(systemPrompt ? [{ role: "system", content: systemPrompt }] : []), { role: "user", content: input }], temperature, max_tokens: maxTokens }) }, timeoutMs);
+  const body = await requestJson(endpoint(connection.baseUrl, "/chat/completions"), { method: "POST", headers: { "content-type": "application/json", authorization: `Bearer ${apiKey}` }, body: JSON.stringify({ model, messages: [...(systemPrompt ? [{ role: "system", content: systemPrompt }] : []), { role: "user", content: input }], temperature, max_tokens: maxTokens, top_p: topP ?? undefined, presence_penalty: presencePenalty ?? undefined, frequency_penalty: frequencyPenalty ?? undefined, seed: seed ?? undefined, stop: stopSequences.length ? stopSequences : undefined }) }, timeoutMs);
   return { text: body.choices?.[0]?.message?.content || "", inputTokens: body.usage?.prompt_tokens || 0, outputTokens: body.usage?.completion_tokens || 0, latencyMs: Math.round(performance.now() - started), finishReason: body.choices?.[0]?.finish_reason || "stop" };
 }

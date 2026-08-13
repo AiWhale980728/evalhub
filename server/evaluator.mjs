@@ -64,7 +64,22 @@ export function createEvaluationRunner({ store, key }) {
       let result;
       try {
         if (!connection) throw new Error("模型连接不存在");
-        result = await invokeModel({ connection, apiKey: decryptSecret(connection.encryptedApiKey, key), model: modelConfig.model, input: testCase.input, systemPrompt: modelConfig.systemPrompt || evaluation.systemPrompt, temperature: modelConfig.temperature ?? evaluation.temperature, maxTokens: modelConfig.maxTokens ?? evaluation.maxTokens, timeoutMs: evaluation.timeoutMs });
+        result = await invokeModel({
+          connection,
+          apiKey: decryptSecret(connection.encryptedApiKey, key),
+          model: modelConfig.model,
+          input: testCase.input,
+          systemPrompt: modelConfig.systemPrompt ?? evaluation.systemPrompt,
+          temperature: modelConfig.temperature ?? evaluation.temperature,
+          maxTokens: modelConfig.maxTokens ?? evaluation.maxTokens,
+          topP: modelConfig.topP,
+          topK: modelConfig.topK,
+          presencePenalty: modelConfig.presencePenalty,
+          frequencyPenalty: modelConfig.frequencyPenalty,
+          seed: modelConfig.seed,
+          stopSequences: modelConfig.stopSequences,
+          timeoutMs: evaluation.timeoutMs,
+        });
         result.cost = priceResult(result, modelConfig);
       } catch (error) { result = { text: "", inputTokens: 0, outputTokens: 0, latencyMs: 0, cost: 0, error: error.message }; }
       const assessment = await judgeWithModel({ evaluation, output: result, testCase, state: store.snapshot(), key });
@@ -75,6 +90,17 @@ export function createEvaluationRunner({ store, key }) {
 }
 
 export function newEvaluation(payload, dataset) {
-  const models = (payload.models || []).map((model, index) => ({ ...model, key: model.key || `${model.connectionId}:${model.model}:${index}` }));
+  const models = (payload.models || []).map((model, index) => ({
+    ...model,
+    key: model.key || `${model.connectionId}:${model.model}:${index}`,
+    temperature: Number(model.temperature ?? payload.temperature ?? 0.2),
+    maxTokens: Number(model.maxTokens ?? payload.maxTokens ?? 1024),
+    topP: model.topP === "" || model.topP == null ? null : Number(model.topP),
+    topK: model.topK === "" || model.topK == null ? null : Number(model.topK),
+    presencePenalty: model.presencePenalty === "" || model.presencePenalty == null ? null : Number(model.presencePenalty),
+    frequencyPenalty: model.frequencyPenalty === "" || model.frequencyPenalty == null ? null : Number(model.frequencyPenalty),
+    seed: model.seed === "" || model.seed == null ? null : Number(model.seed),
+    stopSequences: Array.isArray(model.stopSequences) ? model.stopSequences.map(String).filter(Boolean) : String(model.stopSequences || "").split("|").map((item) => item.trim()).filter(Boolean),
+  }));
   return { id: randomUUID(), name: payload.name || "未命名评测", datasetId: payload.datasetId, datasetName: dataset.name, status: "queued", models, totalRuns: dataset.cases.length * models.length, completedRuns: 0, results: [], reviews: [], rubric: payload.rubric || { criteria: [] }, judge: payload.judge || { enabled: false }, systemPrompt: payload.systemPrompt || "", temperature: Number(payload.temperature ?? 0.2), maxTokens: Number(payload.maxTokens ?? 1024), timeoutMs: Number(payload.timeoutMs ?? 60_000), concurrency: Math.max(1, Math.min(12, Number(payload.concurrency || 4))), createdAt: now() };
 }

@@ -5,9 +5,6 @@ models on the same evaluation dataset. It is designed for product and model
 selection teams that need one repeatable flow for BYOK connections, dataset
 management, parallel runs, review, and export.
 
-> This repository is an MVP. Image evaluation, organization accounts, and
-> enterprise governance are planned extensions rather than current features.
-
 ## What it includes
 
 - 2–8 model comparison with responsive matrix, grid, and focused views
@@ -106,8 +103,8 @@ id,input,expected_keywords,tags
 TC-001,Explain the refund policy,refund|policy,support
 ```
 
-The MVP CSV parser is intentionally simple: fields containing commas or line
-breaks should be supplied as JSONL instead.
+The CSV importer supports simple comma-separated rows. Fields containing commas
+or line breaks should be supplied as JSONL instead.
 
 ## Security model
 
@@ -121,10 +118,10 @@ breaks should be supplied as JSONL instead.
 - Model prompts and outputs are sent to the providers you configure. Review
   each provider's privacy and retention terms before using confidential data.
 
-EvalHub does not yet include authentication, role-based access control, SSO,
-audit logs, database encryption, backups, or multi-user isolation. Put it behind
-an authenticated reverse proxy before exposing it beyond a trusted machine or
-network. See [SECURITY.md](SECURITY.md).
+For access beyond a trusted machine or network, deploy EvalHub behind an
+authenticated reverse proxy. Authentication, role-based access control, SSO,
+audit logs, backups, and multi-user isolation must be provided by the deployment
+environment. See [SECURITY.md](SECURITY.md).
 
 ## Verification
 

@@ -1,0 +1,92 @@
+EvalHub Community License
+Version 1.0 — 13 August 2026
+
+Copyright (c) 2026 YJW. All rights reserved.
+
+1. Grant of License
+
+Subject to every condition in this license, the copyright holder grants you a
+non-exclusive, worldwide, non-transferable, revocable license to view, copy,
+install, run, and modify EvalHub (the “Software”) solely for:
+
+  a. personal, educational, or evaluation use; and
+  b. internal use within one legal entity, including internal use by its
+     employees and contractors acting on its behalf.
+
+2. Source Available, Not Open Source
+
+The Software is source available. This license is not an open-source license
+approved by the Open Source Initiative. No rights are granted except those
+expressly stated here.
+
+3. Attribution and Branding
+
+Every copy, deployment, modification, and derivative work must keep the visible
+“EvalHub by YJW” attribution and “Community License” notice in their original
+location, legible size, and substantially equivalent visual prominence.
+
+You may not remove, hide, obscure, cover, replace, rename, reposition outside
+the ordinary user interface, or make the attribution less visible by CSS,
+JavaScript, configuration, overlays, themes, routing, or any other method. You
+may not white-label the Software. This LICENSE file and all copyright notices
+must remain intact.
+
+4. Commercial Restrictions
+
+Without a separate written commercial license from the copyright holder, you
+may not, directly or indirectly:
+
+  a. sell, sublicense, rent, lease, or otherwise commercially distribute the
+     Software or a derivative work;
+  b. offer the Software or a derivative work as a paid or monetized hosted
+     service, SaaS, managed service, bureau service, or consulting deliverable;
+  c. charge third parties for access to, deployment of, support for, or features
+     of the Software;
+  d. embed, bundle, or integrate the Software into a product or service offered
+     to third parties for commercial advantage or monetary compensation; or
+  e. use the Software to create or market a competing commercial model
+     evaluation platform.
+
+Internal business use under Section 1(b) is not prohibited merely because the
+legal entity is a commercial organization, provided the Software is not offered
+to third parties and no prohibited commercial activity above occurs.
+
+5. Modifications and Distribution
+
+You may modify the Software only for a permitted use. If you share a permitted
+copy or modification without charge, you must provide the complete corresponding
+source code, this license, the attribution and copyright notices, and a clear
+statement of your changes. Recipients receive no rights beyond this license.
+
+6. No Trademark License
+
+Except for the mandatory attribution in Section 3, this license grants no right
+to use the names “EvalHub” or “YJW,” related logos, or other marks to imply
+endorsement, sponsorship, or affiliation.
+
+7. Termination
+
+Your rights terminate automatically and immediately upon breach. If the breach
+is curable, the copyright holder may, at their sole discretion, reinstate the
+license after receiving written confirmation that the breach has been cured.
+
+8. Disclaimer of Warranty
+
+THE SOFTWARE IS PROVIDED “AS IS,” WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
+IMPLIED, INCLUDING BUT NOT LIMITED TO WARRANTIES OF MERCHANTABILITY, FITNESS FOR
+A PARTICULAR PURPOSE, TITLE, AND NON-INFRINGEMENT.
+
+9. Limitation of Liability
+
+TO THE MAXIMUM EXTENT PERMITTED BY LAW, THE COPYRIGHT HOLDER SHALL NOT BE LIABLE
+FOR ANY CLAIM, DAMAGES, OR OTHER LIABILITY ARISING FROM, OUT OF, OR IN CONNECTION
+WITH THE SOFTWARE OR ITS USE.
+
+10. Commercial Licensing
+
+Uses prohibited by Section 4, removal or alteration of branding, white-label
+rights, OEM distribution, and commercial hosting require a separate written
+agreement from the copyright holder.
+
+This license text is a project-specific legal instrument and not legal advice.
+Have qualified counsel review it for your jurisdiction and intended enforcement.

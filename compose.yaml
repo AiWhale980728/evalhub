@@ -1,0 +1,11 @@
+services:
+  evalhub:
+    build: .
+    ports:
+      - "8787:8787"
+    volumes:
+      - evalhub-data:/app/data
+    restart: unless-stopped
+
+volumes:
+  evalhub-data:

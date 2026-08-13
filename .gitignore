@@ -1,0 +1,15 @@
+node_modules/
+dist/
+data/
+.master-key
+.env
+.env.*
+!.env.example
+*.log
+.DS_Store
+design-qa.md
+design-qa-*.png
+implementation-*.png
+AGENTS.md
+.npmrc
+coverage/

@@ -1,0 +1,11 @@
+node_modules
+dist
+data
+.master-key
+.env
+.git
+.github
+design-qa.md
+design-qa-*.png
+implementation-*.png
+npm-debug.log

@@ -5,6 +5,11 @@ models on the same evaluation dataset. It is designed for product and model
 selection teams that need one repeatable flow for BYOK connections, dataset
 management, parallel runs, review, and export.
 
+![EvalHub product overview showing a multi-model evaluation matrix](docs/assets/evalhub-product-overview.jpg)
+
+_Illustrative interface populated with synthetic demo data. A fresh installation
+starts with an empty workspace._
+
 ## What it includes
 
 - 2–8 model comparison with responsive matrix, grid, and focused views

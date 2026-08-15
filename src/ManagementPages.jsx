@@ -8,6 +8,53 @@ const statusLabel = { queued: "排队中", running: "运行中", completed: "已
 const average = (values) => values.length ? values.reduce((sum, value) => sum + value, 0) / values.length : null;
 const money = (value) => `$${Number(value || 0).toFixed(value >= 0.01 ? 3 : 5)}`;
 const short = (value, length = 52) => value?.length > length ? `${value.slice(0, length)}…` : value || "—";
+const percentile = (values, ratio) => values.length ? [...values].sort((a, b) => a - b)[Math.min(values.length - 1, Math.ceil(values.length * ratio) - 1)] : null;
+
+function decisionRows(run) {
+  if (!run) return [];
+  const blind = new Map(run.models.map((model) => [model.key, { wins: 0, battles: 0 }]));
+  for (const item of run.blindComparisons || []) {
+    if (!item.verdict) continue;
+    const left = blind.get(item.leftModelKey); const right = blind.get(item.rightModelKey);
+    if (!left || !right) continue;
+    left.battles += 1; right.battles += 1;
+    if (item.verdict === "left") left.wins += 1;
+    else if (item.verdict === "right") right.wins += 1;
+    else if (item.verdict === "tie") { left.wins += 0.5; right.wins += 0.5; }
+  }
+  return run.models.map((model) => {
+    const results = (run.results || []).filter((item) => item.modelKey === model.key);
+    const scores = results.map((item) => item.assessment?.score).filter(Number.isFinite);
+    const latencies = results.map((item) => Number(item.latencyMs)).filter((item) => item > 0);
+    const quality = average(scores);
+    const variance = scores.length ? average(scores.map((item) => (item - quality) ** 2)) : null;
+    const totalCost = results.reduce((sum, item) => sum + Number(item.cost || 0), 0);
+    const caseCount = new Set(results.map((item) => item.caseId)).size;
+    const duel = blind.get(model.key);
+    return {
+      modelKey: model.key, model: model.model, quality,
+      minimum: scores.length ? Math.min(...scores) : null, stdDev: variance == null ? null : Math.sqrt(variance),
+      passRate: scores.length ? scores.filter((item) => item >= 8).length / scores.length * 100 : null,
+      avgLatency: average(latencies), p95Latency: percentile(latencies, .95), totalCost,
+      costPerCase: totalCost / Math.max(1, caseCount), runs: results.length,
+      winRate: duel?.battles ? duel.wins / duel.battles * 100 : null, battles: duel?.battles || 0,
+    };
+  }).map((row, _, rows) => ({
+    ...row,
+    pareto: !rows.some((other) => other.modelKey !== row.modelKey && Number(other.quality) >= Number(row.quality) && Number(other.costPerCase) <= Number(row.costPerCase) && Number(other.p95Latency || Infinity) <= Number(row.p95Latency || Infinity) && (Number(other.quality) > Number(row.quality) || Number(other.costPerCase) < Number(row.costPerCase) || Number(other.p95Latency || Infinity) < Number(row.p95Latency || Infinity))),
+  })).sort((a, b) => Number(b.quality || 0) - Number(a.quality || 0));
+}
+
+function DecisionScatter({ rows, xKey, xLabel, formatX }) {
+  const values = rows.map((item) => Number(item[xKey] || 0));
+  const maximum = Math.max(...values, 0.000001);
+  return <section className="decision-scatter"><header><strong>质量 × {xLabel}</strong><span>越靠左上越优</span></header><div className="scatter-plot"><i className="axis-y">质量</i><i className="axis-x">{xLabel}</i>{rows.map((row, index) => {
+    const peers = rows.filter((item) => Number(item[xKey] || 0) === Number(row[xKey] || 0) && Number(item.quality || 0) === Number(row.quality || 0));
+    const peerIndex = peers.findIndex((item) => item.modelKey === row.modelKey);
+    const offset = (peerIndex - (peers.length - 1) / 2) * 3.2;
+    return <span key={row.modelKey} className={row.pareto ? "pareto" : ""} style={{ left: `${8 + Number(row[xKey] || 0) / maximum * 82 + offset}%`, bottom: `${8 + Number(row.quality || 0) / 10 * 82}%` }} title={`${row.model}：质量 ${row.quality?.toFixed(2) || "—"}，${xLabel} ${formatX(row[xKey])}`}><b>{index + 1}</b></span>;
+  })}</div><div className="scatter-legend">{rows.map((row, index) => <span key={row.modelKey}><b>{index + 1}</b>{short(row.model, 18)}</span>)}</div></section>;
+}
 
 function PageHeader({ eyebrow, title, description, children }) {
   return <header className="module-header"><div><div className="eyebrow">{eyebrow}</div><h1>{title}</h1><p>{description}</p></div><div className="module-actions">{children}</div></header>;
@@ -29,6 +76,7 @@ export function ManagementPages({
   const [caseQuery, setCaseQuery] = useState("");
   const [editingCase, setEditingCase] = useState(null);
   const [settings, setSettings] = useState(state.settings || {});
+  const [decisionFilters, setDecisionFilters] = useState({ quality: 0, cost: "", latency: "" });
   useEffect(() => setSettings(state.settings || {}), [state.settings]);
 
   const completed = state.evaluations.filter((item) => !["queued", "running"].includes(item.status));
@@ -36,7 +84,7 @@ export function ManagementPages({
   const scored = allResults.filter(({ result }) => Number.isFinite(result.assessment?.score));
   const failures = allResults.filter(({ result }) => result.error || Number(result.assessment?.score) < 6.5);
   const reviewQueue = allResults.filter(({ run, result }) => {
-    const reviewed = run.reviews?.some((item) => item.caseId === result.caseId && item.modelKey === result.modelKey);
+    const reviewed = run.reviews?.some((item) => item.resultId === result.id || (!item.resultId && item.caseId === result.caseId && item.modelKey === result.modelKey));
     return !reviewed && (result.error || !Number.isFinite(result.assessment?.score) || result.assessment.score < 8);
   });
   const selectedDataset = state.datasets.find((item) => item.id === selectedDatasetId) || state.datasets[0];
@@ -96,7 +144,7 @@ export function ManagementPages({
 
   function Tasks() {
     return <><PageHeader eyebrow="评测执行 / 评测任务" title="评测任务" description="创建、追踪和管理全部评测任务；任务完成后可进入矩阵查看。"><button className="primary-button" onClick={openRun}><Plus />新建评测</button></PageHeader>
-      <section className="module-card table-card"><div className="data-table tasks"><div className="data-row head"><span>任务</span><span>数据集</span><span>模型 / 调用</span><span>状态</span><span>创建时间</span><span>操作</span></div>{state.evaluations.map((run) => <div className="data-row" key={run.id}><div><strong>{run.name}</strong><small>{run.models.map((item) => item.model).join(" · ")}</small></div><span>{run.datasetName}</span><span>{run.models.length} / {run.completedRuns}/{run.totalRuns}</span><span className={`status-pill ${run.status}`}>{statusLabel[run.status] || run.status}</span><span>{new Date(run.createdAt).toLocaleString("zh-CN")}</span><div><button onClick={() => openMatrix(run.id)}>查看</button><button className="danger-link" disabled={["queued", "running"].includes(run.status)} onClick={() => deleteEvaluation(run)}>删除</button></div></div>)}{!state.evaluations.length && <Empty icon={CheckCircle} title="暂无评测任务" text="创建任务后可在这里追踪进度。" action={<button className="primary-button" onClick={openRun}>立即创建</button>} />}</div></section></>;
+      <section className="module-card table-card"><div className="data-table tasks"><div className="data-row head"><span>任务</span><span>数据集</span><span>模型 / 调用</span><span>状态</span><span>创建时间</span><span>操作</span></div>{state.evaluations.map((run) => <div className="data-row" key={run.id}><div><strong>{run.name}</strong><small>{run.comparisonMode === "baseline" ? "统一基线" : "模型优化"} · 重复 {run.repeatCount || 1} 次 · {run.models.map((item) => item.model).join(" · ")}</small></div><span>{run.datasetName}</span><span>{run.models.length} / {run.completedRuns}/{run.totalRuns}</span><span className={`status-pill ${run.status}`}>{statusLabel[run.status] || run.status}</span><span>{new Date(run.createdAt).toLocaleString("zh-CN")}</span><div><button onClick={() => openMatrix(run.id)}>查看</button><button className="danger-link" disabled={["queued", "running"].includes(run.status)} onClick={() => deleteEvaluation(run)}>删除</button></div></div>)}{!state.evaluations.length && <Empty icon={CheckCircle} title="暂无评测任务" text="创建任务后可在这里追踪进度。" action={<button className="primary-button" onClick={openRun}>立即创建</button>} />}</div></section></>;
   }
 
   function Models() {
@@ -111,22 +159,24 @@ export function ManagementPages({
   }
 
   function Metrics() {
-    const byModel = new Map();
-    for (const { result } of allResults) {
-      const row = byModel.get(result.model) || { model: result.model, scores: [], latency: [], cost: 0, count: 0 };
-      if (Number.isFinite(result.assessment?.score)) row.scores.push(result.assessment.score);
-      if (result.latencyMs) row.latency.push(result.latencyMs);
-      row.cost += Number(result.cost || 0); row.count += 1; byModel.set(result.model, row);
-    }
-    const rows = [...byModel.values()].map((row) => ({ ...row, score: average(row.scores), avgLatency: average(row.latency) })).sort((a, b) => (b.score || 0) - (a.score || 0));
-    return <><PageHeader eyebrow="质量分析 / 指标看板" title="指标看板" description="按模型汇总质量、速度、成本和通过率，帮助选择最适合业务的方案。"><button className="secondary-button" onClick={() => evaluation && exportEvaluation(evaluation)}>导出当前报告</button></PageHeader>
-      <div className="stat-grid"><Stat label="平均得分" value={avgScore == null ? "—" : avgScore.toFixed(2)} hint={`${scored.length} 个有效评分`} /><Stat label="平均延迟" value={avgLatency == null ? "—" : `${(avgLatency / 1000).toFixed(2)}s`} hint="全部成功调用" tone="indigo" /><Stat label="Token 调用" value={allResults.reduce((sum, { result }) => sum + Number(result.inputTokens || 0) + Number(result.outputTokens || 0), 0).toLocaleString()} hint="输入 + 输出" tone="green" /><Stat label="估算成本" value={money(totalCost)} hint="按任务价格配置" tone="amber" /></div>
-      <section className="module-card metric-card"><header><div><strong>模型综合表现</strong><span>按平均得分排序</span></div></header>{rows.length ? <div className="metric-rows">{rows.map((row, index) => <div className="metric-row" key={row.model}><span className="rank">{index + 1}</span><strong>{row.model}</strong><div className="metric-bar"><i style={{ width: `${(row.score || 0) * 10}%` }} /></div><b>{row.score == null ? "—" : row.score.toFixed(1)}</b><span>{row.avgLatency == null ? "—" : `${(row.avgLatency / 1000).toFixed(2)}s`}</span><span>{money(row.cost)}</span></div>)}</div> : <Empty icon={Pulse} title="暂无指标数据" text="先运行一次真实评测。" />}</section></>;
+    const target = evaluation && !["queued", "running"].includes(evaluation.status) ? evaluation : completed[0];
+    const rows = decisionRows(target);
+    const eligible = rows.filter((row) => Number(row.quality || 0) >= Number(decisionFilters.quality || 0) && (!decisionFilters.cost || row.costPerCase <= Number(decisionFilters.cost)) && (!decisionFilters.latency || row.p95Latency <= Number(decisionFilters.latency) * 1000));
+    const recommended = [...eligible].sort((a, b) => Number(b.quality || 0) - Number(a.quality || 0) || a.costPerCase - b.costPerCase || Number(a.p95Latency || Infinity) - Number(b.p95Latency || Infinity))[0];
+    const targetResults = target?.results || [];
+    const targetScores = targetResults.map((item) => item.assessment?.score).filter(Number.isFinite);
+    const targetLatency = targetResults.map((item) => item.latencyMs).filter((item) => item > 0);
+    return <><PageHeader eyebrow="模型决策 / 质量—成本—延迟" title="模型决策面板" description="在同一评测任务内比较质量、稳定性、成本和尾延迟；推荐只在当前约束下成立。"><button className="secondary-button" onClick={() => target && exportEvaluation(target)}>导出当前报告</button></PageHeader>
+      <div className="decision-context"><div><strong>{target?.name || "尚无已完成评测"}</strong><span>{target ? `${target.comparisonMode === "baseline" ? "统一基线" : "模型优化"} · 每条用例 ${target.repeatCount || 1} 次` : "完成评测后生成决策面板"}</span></div>{recommended ? <div className="decision-recommendation"><span>当前约束下优先候选</span><strong>{recommended.model}</strong><small>质量 {recommended.quality?.toFixed(2)} · P95 {(recommended.p95Latency / 1000).toFixed(2)}s · {money(recommended.costPerCase)}/用例</small></div> : <div className="decision-recommendation empty"><span>当前约束下</span><strong>没有模型满足条件</strong></div>}</div>
+      <div className="stat-grid"><Stat label="平均质量" value={average(targetScores)?.toFixed(2) || "—"} hint={`${targetScores.length} 个有效评分`} /><Stat label="P95 延迟" value={percentile(targetLatency, .95) == null ? "—" : `${(percentile(targetLatency, .95) / 1000).toFixed(2)}s`} hint="关注尾部响应" tone="indigo" /><Stat label="Pareto 候选" value={rows.filter((item) => item.pareto).length} hint="无明显支配方案" tone="green" /><Stat label="任务总成本" value={money(targetResults.reduce((sum, item) => sum + Number(item.cost || 0), 0))} hint="按价格快照估算" tone="amber" /></div>
+      {rows.length ? <><section className="decision-filters"><label><span>最低质量</span><input type="number" min="0" max="10" step="0.1" value={decisionFilters.quality} onChange={(event) => setDecisionFilters({ ...decisionFilters, quality: event.target.value })} /></label><label><span>最高成本 / 用例（USD）</span><input type="number" min="0" step="0.0001" placeholder="不限制" value={decisionFilters.cost} onChange={(event) => setDecisionFilters({ ...decisionFilters, cost: event.target.value })} /></label><label><span>最高 P95 延迟（秒）</span><input type="number" min="0" step="0.1" placeholder="不限制" value={decisionFilters.latency} onChange={(event) => setDecisionFilters({ ...decisionFilters, latency: event.target.value })} /></label><span>{eligible.length}/{rows.length} 个模型满足约束</span></section>
+      <div className="decision-charts"><DecisionScatter rows={rows} xKey="costPerCase" xLabel="成本 / 用例" formatX={money} /><DecisionScatter rows={rows} xKey="p95Latency" xLabel="P95 延迟" formatX={(value) => `${(Number(value || 0) / 1000).toFixed(2)}s`} /></div>
+      <section className="module-card decision-table"><header><div><strong>决策明细</strong><span>Pareto 表示不存在质量更高、同时更便宜且更快的模型；不代表绝对最佳。</span></div></header><div className="decision-row head"><span>模型</span><span>质量 / 最低</span><span>稳定性 σ</span><span>通过率</span><span>平均 / P95 延迟</span><span>成本 / 用例</span><span>盲测胜率</span><span>结论</span></div>{rows.map((row) => <div className={`decision-row ${eligible.some((item) => item.modelKey === row.modelKey) ? "eligible" : "filtered"}`} key={row.modelKey}><strong>{row.model}</strong><span>{row.quality?.toFixed(2) || "—"} / {row.minimum?.toFixed(1) || "—"}</span><span>{row.stdDev?.toFixed(2) || "—"}</span><span>{row.passRate?.toFixed(0) || "—"}%</span><span>{row.avgLatency ? `${(row.avgLatency / 1000).toFixed(2)}s` : "—"} / {row.p95Latency ? `${(row.p95Latency / 1000).toFixed(2)}s` : "—"}</span><span>{money(row.costPerCase)}</span><span>{row.winRate == null ? "待盲测" : `${row.winRate.toFixed(0)}% · ${row.battles} 场`}</span><em>{recommended?.modelKey === row.modelKey ? "优先候选" : row.pareto ? "Pareto 候选" : "被支配"}</em></div>)}</section></> : <section className="module-card metric-card"><Empty icon={Pulse} title="暂无决策数据" text="先运行一次真实评测；当前不会用占位数据生成推荐。" /></section>}</>;
   }
 
   function Reports() {
     return <><PageHeader eyebrow="评测交付 / 对比报告" title="对比报告" description="查看每次评测的模型配置快照，并导出含原始输出与人工结论的 CSV。"><button className="primary-button" onClick={openRun}><Plus />新建评测</button></PageHeader>
-      <div className="report-grid">{completed.map((run) => { const values = run.results.map((item) => item.assessment?.score).filter(Number.isFinite); return <article className="report-card" key={run.id}><header><FileText /><div><strong>{run.name}</strong><span>{new Date(run.createdAt).toLocaleString("zh-CN")}</span></div><em>{average(values)?.toFixed(1) || "—"}</em></header><dl><div><dt>数据集</dt><dd>{run.datasetName}</dd></div><div><dt>对比规模</dt><dd>{run.models.length} 模型 × {run.totalRuns / run.models.length} 用例</dd></div><div><dt>参数快照</dt><dd>{run.models.map((item) => `${item.model} T=${item.temperature ?? run.temperature}`).join("；")}</dd></div></dl><footer><button onClick={() => openMatrix(run.id)}>查看矩阵</button><button className="primary-button" onClick={() => exportEvaluation(run)}><DownloadSimple />导出 CSV</button></footer></article>})}{!completed.length && <Empty icon={FileText} title="暂无可导出的报告" text="评测完成后会自动生成报告入口。" />}</div></>;
+      <div className="report-grid">{completed.map((run) => { const values = run.results.map((item) => item.assessment?.score).filter(Number.isFinite); const cases = run.totalRuns / run.models.length / (run.repeatCount || 1); return <article className="report-card" key={run.id}><header><FileText /><div><strong>{run.name}</strong><span>{new Date(run.createdAt).toLocaleString("zh-CN")}</span></div><em>{average(values)?.toFixed(1) || "—"}</em></header><dl><div><dt>数据集</dt><dd>{run.datasetName}</dd></div><div><dt>对比规模</dt><dd>{run.models.length} 模型 × {cases} 用例 × {run.repeatCount || 1} 次</dd></div><div><dt>公平口径</dt><dd>{run.comparisonMode === "baseline" ? "统一基线参数" : "逐模型优化参数"}</dd></div><div><dt>评分维度</dt><dd>{run.rubric?.criteria?.map((item, _, criteria) => `${item.name} ${Math.round(Number(item.normalizedWeight ?? (Number(item.weight || 1) / criteria.reduce((sum, entry) => sum + Number(entry.weight || 1), 0))) * 100)}%`).join("；") || "综合质量"}</dd></div></dl><footer><button onClick={() => openMatrix(run.id)}>查看矩阵</button><button className="primary-button" onClick={() => exportEvaluation(run)}><DownloadSimple />导出 CSV</button></footer></article>})}{!completed.length && <Empty icon={FileText} title="暂无可导出的报告" text="评测完成后会自动生成报告入口。" />}</div></>;
   }
 
   function Reviews() {

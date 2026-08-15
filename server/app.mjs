@@ -52,7 +52,15 @@ function createDemoAssets() {
     },
   };
 }
-function reportCsv(evaluation) { const lines = [["case_id", "model", "score", "method", "human_verdict", "human_score", "human_notes", "latency_ms", "input_tokens", "output_tokens", "cost", "error", "output"]]; for (const result of evaluation.results) { const review = evaluation.reviews.find((item) => item.caseId === result.caseId && item.modelKey === result.modelKey); lines.push([result.caseId, result.model, result.assessment?.score ?? "", result.assessment?.method || "", review?.verdict || "", review?.score ?? "", review?.notes || "", result.latencyMs, result.inputTokens, result.outputTokens, result.cost, result.error || "", result.text]); } return `${lines.map((row) => row.map(csv).join(",")).join("\n")}\n`; }
+function reportCsv(evaluation) {
+  const lines = [["case_id", "attempt", "model", "score", "dimension_scores", "method", "human_verdict", "human_score", "human_notes", "latency_ms", "input_tokens", "output_tokens", "cost", "error", "output"]];
+  for (const result of evaluation.results) {
+    const review = evaluation.reviews.find((item) => item.resultId === result.id || (!item.resultId && item.caseId === result.caseId && item.modelKey === result.modelKey));
+    const dimensions = (result.assessment?.dimensions || []).map((item) => `${item.name}:${item.score ?? "human"}`).join("|");
+    lines.push([result.caseId, result.attempt || 1, result.model, result.assessment?.score ?? "", dimensions, result.assessment?.method || "", review?.verdict || "", review?.score ?? "", review?.notes || "", result.latencyMs, result.inputTokens, result.outputTokens, result.cost, result.error || "", result.text]);
+  }
+  return `${lines.map((row) => row.map(csv).join(",")).join("\n")}\n`;
+}
 
 function assertSameOrigin(req) {
   if (["GET", "HEAD", "OPTIONS"].includes(req.method)) return;
@@ -91,7 +99,7 @@ export function createApp({ store, key, staticDir }) {
     try {
       assertSameOrigin(req);
       if (req.method === "OPTIONS") return send(res, 204, "");
-      if (url.pathname === "/api/health") return send(res, 200, { ok: true, version: "0.1.0", storage: "local" });
+      if (url.pathname === "/api/health") return send(res, 200, { ok: true, version: "0.2.0", storage: "local" });
       if (url.pathname === "/api/state" && req.method === "GET") { const state = store.snapshot(); return send(res, 200, { connections: state.connections.map(publicConnection), datasets: state.datasets, evaluations: state.evaluations, settings: state.settings }); }
       if (url.pathname === "/api/demo" && req.method === "POST") {
         const demo = createDemoAssets();
@@ -156,6 +164,8 @@ export function createApp({ store, key, staticDir }) {
       }
       if (url.pathname === "/api/evaluations" && req.method === "POST") {
         const body = await readJson(req); required(body.datasetId, "数据集"); required(body.models, "待测模型"); if (body.models.length < 2 || body.models.length > 8) throw Object.assign(new Error("每次请选择 2–8 个模型"), { statusCode: 400 });
+        if (body.repeatCount != null && ![3, 4, 5].includes(Number(body.repeatCount))) throw Object.assign(new Error("每条用例重复次数只能是 3、4 或 5"), { statusCode: 400 });
+        if (body.comparisonMode != null && !["baseline", "optimized"].includes(body.comparisonMode)) throw Object.assign(new Error("公平对比模式无效"), { statusCode: 400 });
         const state = store.snapshot(); const dataset = state.datasets.find((item) => item.id === body.datasetId); if (!dataset) throw Object.assign(new Error("数据集不存在"), { statusCode: 404 });
         for (const model of body.models) { const connection = state.connections.find((item) => item.id === model.connectionId); if (!connection || !connection.models.includes(model.model)) throw Object.assign(new Error(`模型不可用：${model.model}`), { statusCode: 400 }); }
         const evaluation = newEvaluation(body, dataset); await store.mutate((live) => live.evaluations.unshift(evaluation)); setImmediate(() => runner(evaluation.id).catch(async (error) => store.mutate((live) => { const current = live.evaluations.find((item) => item.id === evaluation.id); current.status = "failed"; current.error = error.message; current.completedAt = now(); }))); return send(res, 202, evaluation);
@@ -171,8 +181,30 @@ export function createApp({ store, key, staticDir }) {
         return send(res, 204, "");
       }
       if (segments[0] === "api" && segments[1] === "evaluations" && segments[2] && segments[3] === "reviews" && req.method === "POST") {
-        const body = await readJson(req); required(body.caseId, "测试用例"); required(body.modelKey, "模型"); const review = { id: randomUUID(), caseId: body.caseId, modelKey: body.modelKey, verdict: body.verdict || "reviewed", score: body.score == null ? null : Number(body.score), notes: body.notes || "", createdAt: now() };
-        await store.mutate((state) => { const evaluation = state.evaluations.find((item) => item.id === segments[2]); if (!evaluation) throw Object.assign(new Error("评测不存在"), { statusCode: 404 }); evaluation.reviews = evaluation.reviews.filter((item) => !(item.caseId === review.caseId && item.modelKey === review.modelKey)); evaluation.reviews.push(review); }); return send(res, 201, review);
+        const body = await readJson(req); required(body.caseId, "测试用例"); required(body.modelKey, "模型");
+        const review = { id: randomUUID(), resultId: body.resultId || null, caseId: body.caseId, modelKey: body.modelKey, attempt: Number(body.attempt || 1), verdict: body.verdict || "reviewed", score: body.score == null ? null : Number(body.score), notes: body.notes || "", createdAt: now() };
+        await store.mutate((state) => {
+          const evaluation = state.evaluations.find((item) => item.id === segments[2]);
+          if (!evaluation) throw Object.assign(new Error("评测不存在"), { statusCode: 404 });
+          if (review.resultId && !evaluation.results.some((item) => item.id === review.resultId)) throw Object.assign(new Error("评测结果不存在"), { statusCode: 404 });
+          evaluation.reviews = evaluation.reviews.filter((item) => review.resultId ? item.resultId !== review.resultId : !(item.caseId === review.caseId && item.modelKey === review.modelKey));
+          evaluation.reviews.push(review);
+        });
+        return send(res, 201, review);
+      }
+      if (segments[0] === "api" && segments[1] === "evaluations" && segments[2] && segments[3] === "blind-comparisons" && segments[4] && req.method === "POST") {
+        const body = await readJson(req);
+        if (!["left", "right", "tie", "both_fail"].includes(body.verdict)) throw Object.assign(new Error("盲测结论无效"), { statusCode: 400 });
+        let updated;
+        await store.mutate((state) => {
+          const evaluation = state.evaluations.find((item) => item.id === segments[2]);
+          if (!evaluation) throw Object.assign(new Error("评测不存在"), { statusCode: 404 });
+          const comparison = (evaluation.blindComparisons || []).find((item) => item.id === segments[4]);
+          if (!comparison) throw Object.assign(new Error("盲测对战不存在"), { statusCode: 404 });
+          comparison.verdict = body.verdict; comparison.notes = String(body.notes || ""); comparison.reviewedAt = now();
+          updated = structuredClone(comparison);
+        });
+        return send(res, 200, updated);
       }
       if (segments[0] === "api" && segments[1] === "evaluations" && segments[2] && segments[3] === "report.csv" && req.method === "GET") { const evaluation = store.snapshot().evaluations.find((item) => item.id === segments[2]); return evaluation ? send(res, 200, reportCsv(evaluation), { "content-type": "text/csv; charset=utf-8", "content-disposition": `attachment; filename="evalhub-report-${evaluation.id}.csv"` }) : send(res, 404, { error: "评测不存在" }); }
       if (url.pathname.startsWith("/api/")) return send(res, 404, { error: "接口不存在" });

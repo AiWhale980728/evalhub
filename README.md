@@ -10,7 +10,7 @@
 </p>
 
 <p align="center">
-  <img src="https://img.shields.io/badge/EvalHub-0.1.0-4f5bd5?style=flat-square" alt="EvalHub 0.1.0">
+  <img src="https://img.shields.io/badge/EvalHub-0.2.0-4f5bd5?style=flat-square" alt="EvalHub 0.2.0">
   <img src="https://img.shields.io/badge/Node.js-22%2B-339933?style=flat-square&logo=node.js&logoColor=white" alt="Node.js 22+">
   <img src="https://img.shields.io/badge/self--hosted-BYOK-168f91?style=flat-square" alt="Self-hosted BYOK">
   <img src="https://img.shields.io/badge/license-Community-d63d4b?style=flat-square" alt="Community License">
@@ -59,9 +59,14 @@ EvalHub 的价值不是“接了更多 API”，而是把主观、零散的模�
 | 逐模型参数 | Temperature、Max Tokens、Top P、Top K、频率/存在惩罚、Seed、Stop Sequences 和 System Prompt |
 | 模型连接 | OpenAI、Anthropic、Gemini、OpenAI-compatible 与离线 Mock Provider |
 | 数据集 | CSV、JSON 和 JSONL 导入，支持标签和预期关键词 |
-| 运行控制 | 并行执行、超时、并发数和逐模型配置 |
-| 评分与复核 | 关键词启发式评分、可选 LLM-as-a-Judge、原始回答和人工复核备注 |
-| 指标与报告 | 延迟、Token、可配置成本估算、失败分析和 CSV 导出 |
+| 公平对比 | 统一基线模式强制所有模型使用相同参数与 System Prompt；模型优化模式保留逐模型调参 |
+| 重复运行 | 每条用例重复运行 3–5 次，汇总均分、最低分、标准差、通过率、平均/P95 延迟和成本 |
+| 盲测对战 | 同一用例、同一次运行下自动生成全部模型两两组合，匿名 A/B 投票后再揭示身份 |
+| 多维 Rubric | 自定义 1–12 个评分维度、说明、权重和自动/人工方式；LLM Judge 支持逐维评分 |
+| 决策面板 | 质量—成本、质量—P95 延迟散点，约束筛选、Pareto 候选和盲测胜率 |
+| 运行控制 | 并行执行、超时、并发数、固定/递增 Seed 和参数快照 |
+| 评分与复核 | 关键词启发式评分、可选 LLM-as-a-Judge、原始回答和逐次人工复核备注 |
+| 指标与报告 | 延迟、Token、可配置成本估算、稳定性、失败分析和含逐维分数的 CSV 导出 |
 | 本地保存 | 本地 JSON 状态，API Key 使用 AES-256-GCM 静态加密 |
 | 工作区 | 概览、数据集、测试用例、评测任务、模型管理、失败分析、指标看板、报告、人工复核和系统设置 |
 
@@ -70,8 +75,18 @@ EvalHub 的价值不是“接了更多 API”，而是把主观、零散的模�
 1. 在 **模型管理 → API 连接** 中添加厂商、API Key 和一个或多个模型 ID。
 2. 在 **数据集** 中导入 CSV、JSON 或 JSONL 测试用例。
 3. 创建评测任务，选择 2–8 个模型；同一连接下的不同型号也可同时选择。
-4. 根据评测目标使用统一参数，或为每个模型保存独立的调优参数，然后运行任务。
-5. 在评测矩阵、失败分析、指标看板和人工复核中检查结果，最后导出 CSV 报告。
+4. 选择 **统一基线** 或 **模型优化** 口径，设置每条用例重复 3–5 次，并配置多维 Rubric。
+5. 在矩阵中查看重复运行均分和逐维结果，在盲测对战中匿名判断 A/B 回答。
+6. 使用模型决策面板设置最低质量、最高成本和最高 P95 延迟约束，再结合 Pareto 候选、失败样本与盲测胜率做选型。
+7. 完成人工复核后导出含每次运行、逐维分数和原始回答的 CSV 报告。
+
+### 公平口径与重复运行
+
+- **统一基线**用于回答“在完全相同调用条件下，哪个模型更适合这组任务”。服务端会覆盖逐模型参数，避免只在界面上锁定但实际请求不一致。
+- **模型优化**用于回答“允许针对每个模型调优后，各自的最佳表现如何”。每个模型的独立参数都会写入任务快照。
+- 重复运行会为每次调用保存独立的 `attempt`。配置 Seed 时，每轮在基础 Seed 上递增 1，使不同模型仍使用公平一致的轮次 Seed。
+
+决策面板给出的是“当前数据集、Rubric、价格快照和约束下的优先候选”，不会把任何模型表述为脱离场景的绝对最佳。
 
 > 自动评分、LLM-as-a-Judge 和成本数据都是选型依据，不是绝对真值或最终账单。重要结论应结合原始回答、失败样本和人工复核一起判断。
 

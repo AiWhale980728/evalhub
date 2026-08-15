@@ -6,7 +6,7 @@ const now = () => new Date().toISOString();
 
 function initialState() {
   return {
-    version: 2,
+    version: 3,
     settings: { defaultConcurrency: 4, defaultTimeoutMs: 60000, passScore: 8, reviewScore: 6.5, retentionDays: 90 },
     connections: [],
     datasets: [],
@@ -33,7 +33,16 @@ export class JsonStore {
       retentionDays: 90,
       ...(this.state.settings || {}),
     };
-    this.state.version = 2;
+    this.state.evaluations = (this.state.evaluations || []).map((evaluation) => ({
+      comparisonMode: "optimized",
+      repeatCount: 1,
+      blindComparisons: [],
+      modelSummaries: [],
+      reviews: [],
+      results: [],
+      ...evaluation,
+    }));
+    this.state.version = 3;
     return this;
   }
   snapshot() { return structuredClone(this.state); }

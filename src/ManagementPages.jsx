@@ -1,10 +1,12 @@
 import { useEffect, useMemo, useState } from "react";
 import {
   ArrowRight, ChartBar, CheckCircle, ClipboardText, Database, DownloadSimple, Eye,
-  FileText, GearSix, Key, Plus, Pulse, Robot, ShieldCheck, Trash, WarningCircle, XCircle,
+  FileText, GearSix, ImageSquare, Key, Plus, Pulse, Robot, ShieldCheck, Trash, WarningCircle, XCircle,
 } from "@phosphor-icons/react";
 
 const statusLabel = { queued: "排队中", running: "运行中", completed: "已完成", completed_with_errors: "部分失败", failed: "失败" };
+const modelTypeLabel = { text: "文本模型", image: "生图模型" };
+const resultScore = (result) => Number.isFinite(result?.humanScore) ? result.humanScore : result?.assessment?.score;
 const average = (values) => values.length ? values.reduce((sum, value) => sum + value, 0) / values.length : null;
 const money = (value) => `$${Number(value || 0).toFixed(value >= 0.01 ? 3 : 5)}`;
 const short = (value, length = 52) => value?.length > length ? `${value.slice(0, length)}…` : value || "—";
@@ -24,7 +26,7 @@ function decisionRows(run) {
   }
   return run.models.map((model) => {
     const results = (run.results || []).filter((item) => item.modelKey === model.key);
-    const scores = results.map((item) => item.assessment?.score).filter(Number.isFinite);
+    const scores = results.map(resultScore).filter(Number.isFinite);
     const latencies = results.map((item) => Number(item.latencyMs)).filter((item) => item > 0);
     const quality = average(scores);
     const variance = scores.length ? average(scores.map((item) => (item - quality) ** 2)) : null;
@@ -81,15 +83,15 @@ export function ManagementPages({
 
   const completed = state.evaluations.filter((item) => !["queued", "running"].includes(item.status));
   const allResults = useMemo(() => completed.flatMap((run) => run.results.map((result) => ({ run, result }))), [completed]);
-  const scored = allResults.filter(({ result }) => Number.isFinite(result.assessment?.score));
-  const failures = allResults.filter(({ result }) => result.error || Number(result.assessment?.score) < 6.5);
+  const scored = allResults.filter(({ result }) => Number.isFinite(resultScore(result)));
+  const failures = allResults.filter(({ result }) => result.error || Number(resultScore(result)) < 6.5);
   const reviewQueue = allResults.filter(({ run, result }) => {
     const reviewed = run.reviews?.some((item) => item.resultId === result.id || (!item.resultId && item.caseId === result.caseId && item.modelKey === result.modelKey));
-    return !reviewed && (result.error || !Number.isFinite(result.assessment?.score) || result.assessment.score < 8);
+    return !reviewed && (result.error || !Number.isFinite(resultScore(result)) || resultScore(result) < 8);
   });
   const selectedDataset = state.datasets.find((item) => item.id === selectedDatasetId) || state.datasets[0];
   const totalCost = allResults.reduce((sum, { result }) => sum + Number(result.cost || 0), 0);
-  const avgScore = average(scored.map(({ result }) => result.assessment.score));
+  const avgScore = average(scored.map(({ result }) => resultScore(result)));
   const avgLatency = average(allResults.filter(({ result }) => result.latencyMs > 0).map(({ result }) => result.latencyMs));
   const providerCount = new Set(state.connections.map((item) => item.provider)).size;
 
@@ -144,18 +146,18 @@ export function ManagementPages({
 
   function Tasks() {
     return <><PageHeader eyebrow="评测执行 / 评测任务" title="评测任务" description="创建、追踪和管理全部评测任务；任务完成后可进入矩阵查看。"><button className="primary-button" onClick={openRun}><Plus />新建评测</button></PageHeader>
-      <section className="module-card table-card"><div className="data-table tasks"><div className="data-row head"><span>任务</span><span>数据集</span><span>模型 / 调用</span><span>状态</span><span>创建时间</span><span>操作</span></div>{state.evaluations.map((run) => <div className="data-row" key={run.id}><div><strong>{run.name}</strong><small>{run.comparisonMode === "baseline" ? "统一基线" : "模型优化"} · 重复 {run.repeatCount || 1} 次 · {run.models.map((item) => item.model).join(" · ")}</small></div><span>{run.datasetName}</span><span>{run.models.length} / {run.completedRuns}/{run.totalRuns}</span><span className={`status-pill ${run.status}`}>{statusLabel[run.status] || run.status}</span><span>{new Date(run.createdAt).toLocaleString("zh-CN")}</span><div><button onClick={() => openMatrix(run.id)}>查看</button><button className="danger-link" disabled={["queued", "running"].includes(run.status)} onClick={() => deleteEvaluation(run)}>删除</button></div></div>)}{!state.evaluations.length && <Empty icon={CheckCircle} title="暂无评测任务" text="创建任务后可在这里追踪进度。" action={<button className="primary-button" onClick={openRun}>立即创建</button>} />}</div></section></>;
+      <section className="module-card table-card"><div className="data-table tasks"><div className="data-row head"><span>任务</span><span>数据集</span><span>模型 / 调用</span><span>状态</span><span>创建时间</span><span>操作</span></div>{state.evaluations.map((run) => <div className="data-row" key={run.id}><div><strong>{run.name}</strong><small>{modelTypeLabel[run.modelType || "text"]} · {run.comparisonMode === "baseline" ? "统一基线" : "模型优化"} · 重复 {run.repeatCount || 1} 次 · {run.models.map((item) => item.model).join(" · ")}</small></div><span>{run.datasetName}</span><span>{run.models.length} / {run.completedRuns}/{run.totalRuns}</span><span className={`status-pill ${run.status}`}>{statusLabel[run.status] || run.status}</span><span>{new Date(run.createdAt).toLocaleString("zh-CN")}</span><div><button onClick={() => openMatrix(run.id)}>查看</button><button className="danger-link" disabled={["queued", "running"].includes(run.status)} onClick={() => deleteEvaluation(run)}>删除</button></div></div>)}{!state.evaluations.length && <Empty icon={CheckCircle} title="暂无评测任务" text="创建任务后可在这里追踪进度。" action={<button className="primary-button" onClick={openRun}>立即创建</button>} />}</div></section></>;
   }
 
   function Models() {
     return <><PageHeader eyebrow="模型接入 / 模型管理" title="模型与 API 连接" description="统一管理厂商连接和模型型号；API Key 只在本机加密保存。"><button className="primary-button" onClick={openApi}><Key />管理 API 连接</button></PageHeader>
-      <div className="connection-grid">{state.connections.map((connection) => <article className="connection-card" key={connection.id}><header><span className="connection-logo"><Robot /></span><div><strong>{connection.name}</strong><small>{connection.provider} · {connection.baseUrl}</small></div><em><CheckCircle weight="fill" />已连接</em></header><div className="model-tags">{connection.models.map((model) => <span key={model}>{model}</span>)}</div><footer><span>{connection.models.length} 个模型型号</span><span>{connection.hasApiKey ? `Key •••• ${connection.keySuffix}` : "无需 API Key"}</span></footer></article>)}{!state.connections.length ? <Empty icon={Robot} title="还没有模型连接" text="添加自己的 API 连接，或在概览页主动加载离线示例。" action={<button className="primary-button" onClick={openApi}>添加 API 连接</button>} /> : null}</div></>;
+      <div className="connection-grid">{state.connections.map((connection) => { const Icon = (connection.modelType || "text") === "image" ? ImageSquare : Robot; return <article className="connection-card" key={connection.id}><header><span className="connection-logo"><Icon /></span><div><strong>{connection.name}</strong><small>{modelTypeLabel[connection.modelType || "text"]} · {connection.provider} · {connection.baseUrl}</small></div><em><CheckCircle weight="fill" />已连接</em></header><div className="model-tags">{connection.models.map((model) => <span key={model}>{model}</span>)}</div><footer><span>{connection.models.length} 个模型型号</span><span>{connection.hasApiKey ? `Key •••• ${connection.keySuffix}` : "无需 API Key"}</span></footer></article>; })}{!state.connections.length ? <Empty icon={Robot} title="还没有模型连接" text="添加自己的 API 连接，或在概览页主动加载离线示例。" action={<button className="primary-button" onClick={openApi}>添加 API 连接</button>} /> : null}</div></>;
   }
 
   function Failures() {
     return <><PageHeader eyebrow="质量分析 / 失败分析" title="失败分析" description="聚合低分、调用错误与常见失败场景，直接进入人工复核。"><button className="secondary-button" onClick={() => openEvaluation("评测矩阵")}>返回矩阵</button></PageHeader>
       <div className="stat-grid"><Stat label="失败结果" value={failures.length} hint={`来自 ${new Set(failures.map(({ run }) => run.id)).size} 个任务`} tone="red" /><Stat label="调用错误" value={failures.filter(({ result }) => result.error).length} hint="接口、超时或模型错误" tone="amber" /><Stat label="低分结果" value={failures.filter(({ result }) => !result.error).length} hint="自动评分低于 6.5" /><Stat label="待复核" value={reviewQueue.length} hint="尚无人工结论" tone="indigo" /></div>
-      <section className="module-card table-card"><div className="data-table failures"><div className="data-row head"><span>用例</span><span>模型</span><span>任务</span><span>问题</span><span>分数</span><span>操作</span></div>{failures.map(({ run, result }) => <div className="data-row" key={`${run.id}:${result.id}`}><strong>{result.caseId}</strong><span>{result.model}</span><span>{run.name}</span><span className="failure-reason">{short(result.error || result.assessment?.reason)}</span><span><b className="bad-score">{result.assessment?.score ?? 0}</b></span><button onClick={() => openReview(run, result)}>人工复核</button></div>)}{!failures.length && <Empty icon={ShieldCheck} title="暂无失败结果" text="完成真实评测后，这里会自动聚合失败项。" />}</div></section></>;
+      <section className="module-card table-card"><div className="data-table failures"><div className="data-row head"><span>用例</span><span>模型</span><span>任务</span><span>问题</span><span>分数</span><span>操作</span></div>{failures.map(({ run, result }) => <div className="data-row" key={`${run.id}:${result.id}`}><strong>{result.caseId}</strong><span>{result.model}</span><span>{run.name}</span><span className="failure-reason">{short(result.error || result.assessment?.reason)}</span><span><b className="bad-score">{resultScore(result) ?? 0}</b></span><button onClick={() => openReview(run, result)}>人工复核</button></div>)}{!failures.length && <Empty icon={ShieldCheck} title="暂无失败结果" text="完成真实评测后，这里会自动聚合失败项。" />}</div></section></>;
   }
 
   function Metrics() {
@@ -164,7 +166,7 @@ export function ManagementPages({
     const eligible = rows.filter((row) => Number(row.quality || 0) >= Number(decisionFilters.quality || 0) && (!decisionFilters.cost || row.costPerCase <= Number(decisionFilters.cost)) && (!decisionFilters.latency || row.p95Latency <= Number(decisionFilters.latency) * 1000));
     const recommended = [...eligible].sort((a, b) => Number(b.quality || 0) - Number(a.quality || 0) || a.costPerCase - b.costPerCase || Number(a.p95Latency || Infinity) - Number(b.p95Latency || Infinity))[0];
     const targetResults = target?.results || [];
-    const targetScores = targetResults.map((item) => item.assessment?.score).filter(Number.isFinite);
+    const targetScores = targetResults.map(resultScore).filter(Number.isFinite);
     const targetLatency = targetResults.map((item) => item.latencyMs).filter((item) => item > 0);
     return <><PageHeader eyebrow="模型决策 / 质量—成本—延迟" title="模型决策面板" description="在同一评测任务内比较质量、稳定性、成本和尾延迟；推荐只在当前约束下成立。"><button className="secondary-button" onClick={() => target && exportEvaluation(target)}>导出当前报告</button></PageHeader>
       <div className="decision-context"><div><strong>{target?.name || "尚无已完成评测"}</strong><span>{target ? `${target.comparisonMode === "baseline" ? "统一基线" : "模型优化"} · 每条用例 ${target.repeatCount || 1} 次` : "完成评测后生成决策面板"}</span></div>{recommended ? <div className="decision-recommendation"><span>当前约束下优先候选</span><strong>{recommended.model}</strong><small>质量 {recommended.quality?.toFixed(2)} · P95 {(recommended.p95Latency / 1000).toFixed(2)}s · {money(recommended.costPerCase)}/用例</small></div> : <div className="decision-recommendation empty"><span>当前约束下</span><strong>没有模型满足条件</strong></div>}</div>
@@ -176,12 +178,12 @@ export function ManagementPages({
 
   function Reports() {
     return <><PageHeader eyebrow="评测交付 / 对比报告" title="对比报告" description="查看每次评测的模型配置快照，并导出含原始输出与人工结论的 CSV。"><button className="primary-button" onClick={openRun}><Plus />新建评测</button></PageHeader>
-      <div className="report-grid">{completed.map((run) => { const values = run.results.map((item) => item.assessment?.score).filter(Number.isFinite); const cases = run.totalRuns / run.models.length / (run.repeatCount || 1); return <article className="report-card" key={run.id}><header><FileText /><div><strong>{run.name}</strong><span>{new Date(run.createdAt).toLocaleString("zh-CN")}</span></div><em>{average(values)?.toFixed(1) || "—"}</em></header><dl><div><dt>数据集</dt><dd>{run.datasetName}</dd></div><div><dt>对比规模</dt><dd>{run.models.length} 模型 × {cases} 用例 × {run.repeatCount || 1} 次</dd></div><div><dt>公平口径</dt><dd>{run.comparisonMode === "baseline" ? "统一基线参数" : "逐模型优化参数"}</dd></div><div><dt>评分维度</dt><dd>{run.rubric?.criteria?.map((item, _, criteria) => `${item.name} ${Math.round(Number(item.normalizedWeight ?? (Number(item.weight || 1) / criteria.reduce((sum, entry) => sum + Number(entry.weight || 1), 0))) * 100)}%`).join("；") || "综合质量"}</dd></div></dl><footer><button onClick={() => openMatrix(run.id)}>查看矩阵</button><button className="primary-button" onClick={() => exportEvaluation(run)}><DownloadSimple />导出 CSV</button></footer></article>})}{!completed.length && <Empty icon={FileText} title="暂无可导出的报告" text="评测完成后会自动生成报告入口。" />}</div></>;
+      <div className="report-grid">{completed.map((run) => { const values = run.results.map(resultScore).filter(Number.isFinite); const cases = run.totalRuns / run.models.length / (run.repeatCount || 1); return <article className="report-card" key={run.id}><header>{(run.modelType || "text") === "image" ? <ImageSquare /> : <FileText />}<div><strong>{run.name}</strong><span>{modelTypeLabel[run.modelType || "text"]} · {new Date(run.createdAt).toLocaleString("zh-CN")}</span></div><em>{average(values)?.toFixed(1) || "—"}</em></header><dl><div><dt>数据集</dt><dd>{run.datasetName}</dd></div><div><dt>对比规模</dt><dd>{run.models.length} 模型 × {cases} 用例 × {run.repeatCount || 1} 次</dd></div><div><dt>公平口径</dt><dd>{run.comparisonMode === "baseline" ? "统一基线参数" : "逐模型优化参数"}</dd></div><div><dt>评分维度</dt><dd>{run.rubric?.criteria?.map((item, _, criteria) => `${item.name} ${Math.round(Number(item.normalizedWeight ?? (Number(item.weight || 1) / criteria.reduce((sum, entry) => sum + Number(entry.weight || 1), 0))) * 100)}%`).join("；") || "综合质量"}</dd></div></dl><footer><button onClick={() => openMatrix(run.id)}>查看矩阵</button><button className="primary-button" onClick={() => exportEvaluation(run)}><DownloadSimple />导出 CSV</button></footer></article>})}{!completed.length && <Empty icon={FileText} title="暂无可导出的报告" text="评测完成后会自动生成报告入口。" />}</div></>;
   }
 
   function Reviews() {
     return <><PageHeader eyebrow="评测交付 / 人工复核" title="人工复核队列" description="优先处理失败、低分和无规则评分结果，人工结论将写入对应评测记录。"><span className="queue-count">{reviewQueue.length} 项待处理</span></PageHeader>
-      <section className="module-card review-queue">{reviewQueue.map(({ run, result }) => <article key={`${run.id}:${result.id}`}><div><span className="case-badge">{result.caseId}</span><strong>{result.model}</strong><small>{run.name}</small></div><p>{short(result.text || result.error, 100)}</p><span className="review-score">{result.assessment?.score ?? "—"}</span><button className="primary-button" onClick={() => openReview(run, result)}><Eye />开始复核</button></article>)}{!reviewQueue.length && <Empty icon={CheckCircle} title="复核队列已清空" text="当前没有待处理结果。" />}</section></>;
+      <section className="module-card review-queue">{reviewQueue.map(({ run, result }) => <article key={`${run.id}:${result.id}`}><div><span className="case-badge">{result.caseId}</span><strong>{result.model}</strong><small>{run.name}</small></div><p>{result.imageUrl ? "图片已生成，等待人工评分" : short(result.text || result.error, 100)}</p><span className="review-score">{resultScore(result) ?? "—"}</span><button className="primary-button" onClick={() => openReview(run, result)}><Eye />开始复核</button></article>)}{!reviewQueue.length && <Empty icon={CheckCircle} title="复核队列已清空" text="当前没有待处理结果。" />}</section></>;
   }
 
   function Settings() {

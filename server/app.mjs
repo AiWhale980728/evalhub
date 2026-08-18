@@ -5,7 +5,7 @@ import { randomUUID } from "node:crypto";
 import { encryptSecret } from "./crypto.mjs";
 import { publicConnection } from "./store.mjs";
 import { testProvider } from "./adapters.mjs";
-import { createEvaluationRunner, newEvaluation } from "./evaluator.mjs";
+import { aggregateModelResults, createEvaluationRunner, newEvaluation } from "./evaluator.mjs";
 
 const MIME = { ".html": "text/html; charset=utf-8", ".js": "text/javascript; charset=utf-8", ".css": "text/css; charset=utf-8", ".json": "application/json; charset=utf-8", ".png": "image/png", ".svg": "image/svg+xml" };
 const now = () => new Date().toISOString();
@@ -21,7 +21,7 @@ function safeMessage(error) {
 function send(res, status, body, headers = {}) {
   if (status === 204) { res.writeHead(204, headers); return res.end(); }
   const payload = typeof body === "string" || Buffer.isBuffer(body) ? body : JSON.stringify(body);
-  res.writeHead(status, { "content-type": typeof body === "string" ? "text/plain; charset=utf-8" : "application/json; charset=utf-8", "cache-control": "no-store", "content-security-policy": "default-src 'self'; style-src 'self' 'unsafe-inline'; img-src 'self' data:; connect-src 'self'; frame-ancestors 'none'; base-uri 'self'; form-action 'self'", "cross-origin-resource-policy": "same-origin", "permissions-policy": "camera=(), microphone=(), geolocation=()", "x-content-type-options": "nosniff", "x-frame-options": "DENY", "referrer-policy": "no-referrer", ...headers });
+  res.writeHead(status, { "content-type": typeof body === "string" ? "text/plain; charset=utf-8" : "application/json; charset=utf-8", "cache-control": "no-store", "content-security-policy": "default-src 'self'; style-src 'self' 'unsafe-inline'; img-src 'self' data: https:; connect-src 'self'; frame-ancestors 'none'; base-uri 'self'; form-action 'self'", "cross-origin-resource-policy": "same-origin", "permissions-policy": "camera=(), microphone=(), geolocation=()", "x-content-type-options": "nosniff", "x-frame-options": "DENY", "referrer-policy": "no-referrer", ...headers });
   res.end(payload);
 }
 
@@ -32,11 +32,17 @@ async function readJson(req, maxBytes = 10 * 1024 * 1024) {
   try { return JSON.parse(Buffer.concat(chunks).toString("utf8")); } catch { throw Object.assign(new Error("JSON 格式无效"), { statusCode: 400 }); }
 }
 function required(value, name) { if (!value || (Array.isArray(value) && !value.length)) throw Object.assign(new Error(`${name}不能为空`), { statusCode: 400 }); }
+function validateReferenceImage(value) {
+  const match = String(value || "").match(/^data:(image\/(?:png|jpeg|webp));base64,([A-Za-z0-9+/=]+)$/i);
+  if (!match) throw Object.assign(new Error("参考图片必须是 PNG、JPEG 或 WebP 文件"), { statusCode: 400 });
+  const bytes = Buffer.from(match[2], "base64");
+  if (!bytes.length || bytes.length > 5 * 1024 * 1024) throw Object.assign(new Error("参考图片大小必须在 5 MB 以内"), { statusCode: 400 });
+}
 function csv(value) { let text = String(value ?? ""); if (/^[=+\-@]/.test(text)) text = `'${text}`; return /[",\n]/.test(text) ? `"${text.replaceAll('"', '""')}"` : text; }
 function createDemoAssets() {
   const createdAt = now();
   return {
-    connection: { id: "connection-mock", name: "离线示例连接", provider: "mock", baseUrl: "mock://local", encryptedApiKey: null, keySuffix: null, models: ["mock-balanced", "mock-fast", "mock-safe", "mock-precise", "mock-creative", "mock-compact", "mock-reasoning", "mock-guard"], createdAt, updatedAt: createdAt },
+    connection: { id: "connection-mock", name: "离线示例连接", provider: "mock", modelType: "text", baseUrl: "mock://local", encryptedApiKey: null, keySuffix: null, models: ["mock-balanced", "mock-fast", "mock-safe", "mock-precise", "mock-creative", "mock-compact", "mock-reasoning", "mock-guard"], createdAt, updatedAt: createdAt },
     dataset: {
       id: "dataset-demo-rag", name: "客服知识库示例集", description: "用户主动加载的合成示例，可安全删除，不包含真实客户数据。",
       cases: [
@@ -53,11 +59,11 @@ function createDemoAssets() {
   };
 }
 function reportCsv(evaluation) {
-  const lines = [["case_id", "attempt", "model", "score", "dimension_scores", "method", "human_verdict", "human_score", "human_notes", "latency_ms", "input_tokens", "output_tokens", "cost", "error", "output"]];
+  const lines = [["case_id", "attempt", "model_type", "model", "score", "dimension_scores", "method", "human_verdict", "human_score", "human_notes", "latency_ms", "input_tokens", "output_tokens", "cost", "error", "output"]];
   for (const result of evaluation.results) {
     const review = evaluation.reviews.find((item) => item.resultId === result.id || (!item.resultId && item.caseId === result.caseId && item.modelKey === result.modelKey));
     const dimensions = (result.assessment?.dimensions || []).map((item) => `${item.name}:${item.score ?? "human"}`).join("|");
-    lines.push([result.caseId, result.attempt || 1, result.model, result.assessment?.score ?? "", dimensions, result.assessment?.method || "", review?.verdict || "", review?.score ?? "", review?.notes || "", result.latencyMs, result.inputTokens, result.outputTokens, result.cost, result.error || "", result.text]);
+    lines.push([result.caseId, result.attempt || 1, evaluation.modelType || "text", result.model, result.assessment?.score ?? "", dimensions, result.assessment?.method || "", review?.verdict || "", review?.score ?? "", review?.notes || "", result.latencyMs, result.inputTokens || 0, result.outputTokens || 0, result.cost, result.error || "", result.imageUrl || result.text]);
   }
   return `${lines.map((row) => row.map(csv).join(",")).join("\n")}\n`;
 }
@@ -126,7 +132,9 @@ export function createApp({ store, key, staticDir }) {
       if (url.pathname === "/api/connections/test" && req.method === "POST") { const body = await readJson(req); required(body.provider, "厂商"); required(body.baseUrl, "Base URL"); return send(res, 200, await testProvider(body, body.apiKey || "")); }
       if (url.pathname === "/api/connections" && req.method === "POST") {
         const body = await readJson(req); required(body.name, "连接名称"); required(body.provider, "厂商"); required(body.baseUrl, "Base URL"); required(body.models, "模型列表"); if (body.provider !== "mock") required(body.apiKey, "API Key");
-        const connection = { id: randomUUID(), name: body.name.trim(), provider: body.provider, baseUrl: body.baseUrl.trim(), encryptedApiKey: encryptSecret(body.apiKey || "", key), keySuffix: body.apiKey ? body.apiKey.slice(-4) : null, models: [...new Set(body.models.map((item) => String(item).trim()).filter(Boolean))], createdAt: now(), updatedAt: now() };
+        const modelType = body.modelType === "image" ? "image" : "text";
+        if (modelType === "image" && body.provider === "anthropic") throw Object.assign(new Error("Anthropic 连接暂不支持生图模型"), { statusCode: 400 });
+        const connection = { id: randomUUID(), name: body.name.trim(), provider: body.provider, modelType, baseUrl: body.baseUrl.trim(), encryptedApiKey: encryptSecret(body.apiKey || "", key), keySuffix: body.apiKey ? body.apiKey.slice(-4) : null, models: [...new Set(body.models.map((item) => String(item).trim()).filter(Boolean))], createdAt: now(), updatedAt: now() };
         await store.mutate((state) => state.connections.push(connection)); return send(res, 201, publicConnection(connection));
       }
       if (segments[0] === "api" && segments[1] === "connections" && segments[2] && req.method === "DELETE") {
@@ -163,11 +171,19 @@ export function createApp({ store, key, staticDir }) {
         return send(res, 204, "");
       }
       if (url.pathname === "/api/evaluations" && req.method === "POST") {
-        const body = await readJson(req); required(body.datasetId, "数据集"); required(body.models, "待测模型"); if (body.models.length < 2 || body.models.length > 8) throw Object.assign(new Error("每次请选择 2–8 个模型"), { statusCode: 400 });
+        const body = await readJson(req); required(body.models, "待测模型"); if (body.models.length < 2 || body.models.length > 8) throw Object.assign(new Error("每次请选择 2–8 个模型"), { statusCode: 400 });
         if (body.repeatCount != null && ![3, 4, 5].includes(Number(body.repeatCount))) throw Object.assign(new Error("每条用例重复次数只能是 3、4 或 5"), { statusCode: 400 });
         if (body.comparisonMode != null && !["baseline", "optimized"].includes(body.comparisonMode)) throw Object.assign(new Error("公平对比模式无效"), { statusCode: 400 });
-        const state = store.snapshot(); const dataset = state.datasets.find((item) => item.id === body.datasetId); if (!dataset) throw Object.assign(new Error("数据集不存在"), { statusCode: 404 });
-        for (const model of body.models) { const connection = state.connections.find((item) => item.id === model.connectionId); if (!connection || !connection.models.includes(model.model)) throw Object.assign(new Error(`模型不可用：${model.model}`), { statusCode: 400 }); }
+        const state = store.snapshot(); const dataset = state.datasets.find((item) => item.id === body.datasetId);
+        const modelTypes = new Set();
+        for (const model of body.models) { const connection = state.connections.find((item) => item.id === model.connectionId); if (!connection || !connection.models.includes(model.model)) throw Object.assign(new Error(`模型不可用：${model.model}`), { statusCode: 400 }); modelTypes.add(connection.modelType || "text"); }
+        if (modelTypes.size !== 1) throw Object.assign(new Error("同一评测只能选择相同类型的模型"), { statusCode: 400 });
+        const [modelType] = modelTypes;
+        if (body.modelType && body.modelType !== modelType) throw Object.assign(new Error("任务模型类型与连接不一致"), { statusCode: 400 });
+        body.modelType = modelType;
+        const imageToImage = modelType === "image" && body.imageMode === "image-to-image";
+        if (imageToImage) { required(body.imageInstruction, "图生图文字指令"); required(body.referenceImage, "参考图片"); validateReferenceImage(body.referenceImage); }
+        else if (!dataset) throw Object.assign(new Error("数据集不存在"), { statusCode: 404 });
         const evaluation = newEvaluation(body, dataset); await store.mutate((live) => live.evaluations.unshift(evaluation)); setImmediate(() => runner(evaluation.id).catch(async (error) => store.mutate((live) => { const current = live.evaluations.find((item) => item.id === evaluation.id); current.status = "failed"; current.error = error.message; current.completedAt = now(); }))); return send(res, 202, evaluation);
       }
       if (segments[0] === "api" && segments[1] === "evaluations" && segments[2] && segments.length === 3 && req.method === "GET") { const evaluation = store.snapshot().evaluations.find((item) => item.id === segments[2]); return evaluation ? send(res, 200, evaluation) : send(res, 404, { error: "评测不存在" }); }
@@ -189,6 +205,9 @@ export function createApp({ store, key, staticDir }) {
           if (review.resultId && !evaluation.results.some((item) => item.id === review.resultId)) throw Object.assign(new Error("评测结果不存在"), { statusCode: 404 });
           evaluation.reviews = evaluation.reviews.filter((item) => review.resultId ? item.resultId !== review.resultId : !(item.caseId === review.caseId && item.modelKey === review.modelKey));
           evaluation.reviews.push(review);
+          const result = review.resultId ? evaluation.results.find((item) => item.id === review.resultId) : evaluation.results.find((item) => item.caseId === review.caseId && item.modelKey === review.modelKey && Number(item.attempt || 1) === review.attempt);
+          if (result) { result.humanScore = review.score; result.humanVerdict = review.verdict; }
+          evaluation.modelSummaries = aggregateModelResults(evaluation);
         });
         return send(res, 201, review);
       }

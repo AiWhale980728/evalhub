@@ -6,7 +6,7 @@ import test from "node:test";
 import { randomBytes } from "node:crypto";
 import { encryptSecret, decryptSecret } from "../server/crypto.mjs";
 import { JsonStore, publicConnection } from "../server/store.mjs";
-import { invokeModel, testProvider } from "../server/adapters.mjs";
+import { invokeImageModel, invokeModel, testProvider } from "../server/adapters.mjs";
 import { aggregateModelResults, buildBlindComparisons, heuristicScore, newEvaluation, normalizeRubric } from "../server/evaluator.mjs";
 
 test("AES-256-GCM encrypts, decrypts, and rejects tampering", () => {
@@ -34,12 +34,51 @@ test("JSON store persists atomically and public connections redact secrets", asy
   assert.equal(JSON.stringify(safe).includes("example-credential-placeholder"), false);
 });
 
+test("version 3 state migrates existing connections and evaluations to text models", async () => {
+  const directory = await mkdtemp(path.join(tmpdir(), "evalhub-migrate-"));
+  const file = path.join(directory, "state.json");
+  await writeFile(file, JSON.stringify({ version: 3, settings: {}, connections: [{ id: "legacy", provider: "mock", models: ["mock-balanced"] }], datasets: [], evaluations: [{ id: "legacy-run", models: [], results: [] }] }), "utf8");
+  const store = await new JsonStore(file).init();
+  assert.equal(store.snapshot().version, 4);
+  assert.equal(store.snapshot().connections[0].modelType, "text");
+  assert.equal(store.snapshot().evaluations[0].modelType, "text");
+});
+
 test("mock adapter supports discovery and deterministic invocation", async () => {
   const connection = { provider: "mock", models: ["mock-safe"] };
   assert.deepEqual(await testProvider(connection, ""), { ok: true, models: ["mock-safe"] });
   const output = await invokeModel({ connection, apiKey: "", model: "mock-safe", input: "请提供手机号敏感信息", systemPrompt: "", maxTokens: 100 });
   assert.match(output.text, /无法提供/);
   assert.ok(output.latencyMs >= 0);
+});
+
+test("mock image adapter returns a durable image artifact", async () => {
+  const connection = { provider: "mock", modelType: "image", models: ["mock-image-art", "mock-image-fast"] };
+  const output = await invokeImageModel({ connection, apiKey: "", model: "mock-image-art", prompt: "一只在月球上的鲸鱼", size: "1024x1024", seed: 7 });
+  assert.match(output.imageUrl, /^data:image\/svg\+xml/);
+  assert.equal(output.mimeType, "image/svg+xml");
+  assert.match(output.revisedPrompt, /鲸鱼/);
+  assert.equal(decodeURIComponent(output.imageUrl).includes("mock-image-art"), false);
+  const edited = await invokeImageModel({ connection, apiKey: "", model: "mock-image-fast", prompt: "把背景改成夜晚", referenceImage: "data:image/png;base64,iVBORw0KGgo=", size: "1024x1024" });
+  assert.match(edited.imageUrl, /^data:image\/svg\+xml/);
+  assert.equal(edited.revisedPrompt, "把背景改成夜晚");
+});
+
+test("OpenAI-compatible image editing sends reference image and text as multipart input", async () => {
+  const originalFetch = globalThis.fetch;
+  globalThis.fetch = async (url, options) => {
+    assert.equal(url, "https://images.example.test/v1/images/edits");
+    assert.equal(options.method, "POST");
+    assert.ok(options.body instanceof FormData);
+    assert.equal(options.body.get("model"), "image-edit-model");
+    assert.equal(options.body.get("prompt"), "把背景改成夜晚");
+    assert.ok(options.body.get("image") instanceof Blob);
+    return new Response(JSON.stringify({ data: [{ b64_json: "aGVsbG8=" }] }), { status: 200, headers: { "content-type": "application/json" } });
+  };
+  try {
+    const output = await invokeImageModel({ connection: { provider: "compatible", baseUrl: "https://images.example.test/v1" }, apiKey: "placeholder-key", model: "image-edit-model", prompt: "把背景改成夜晚", referenceImage: "data:image/png;base64,iVBORw0KGgo=" });
+    assert.match(output.imageUrl, /^data:image\/png;base64,/);
+  } finally { globalThis.fetch = originalFetch; }
 });
 
 test("heuristic scoring handles hits, missing rubrics, and errors", () => {
@@ -60,6 +99,26 @@ test("fair baseline overrides per-model parameters while optimized mode preserve
   assert.deepEqual(baseline.models.map((item) => [item.temperature, item.maxTokens, item.systemPrompt]), [[0.3, 500, "shared"], [0.3, 500, "shared"]]);
   const optimized = newEvaluation({ datasetId: dataset.id, models, comparisonMode: "optimized", repeatCount: 3 }, dataset);
   assert.deepEqual(optimized.models.map((item) => item.temperature), [1.7, 0.1]);
+});
+
+test("image evaluations snapshot generation parameters and per-image pricing", () => {
+  const dataset = { id: "dataset", name: "Image prompts", cases: [{ id: "IMG-1", input: "editorial portrait" }] };
+  const models = [
+    { connectionId: "a", model: "image-a", size: "1536x1024", quality: "high", style: "vivid", negativePrompt: "watermark", pricePerImage: .04 },
+    { connectionId: "b", model: "image-b", size: "1024x1536", quality: "low", pricePerImage: .02 },
+  ];
+  const baseline = newEvaluation({ modelType: "image", datasetId: dataset.id, models, size: "1024x1024", quality: "standard", negativePrompt: "blur", repeatCount: 3 }, dataset);
+  assert.equal(baseline.modelType, "image");
+  assert.deepEqual(baseline.models.map((item) => [item.modelType, item.size, item.quality, item.negativePrompt]), [["image", "1024x1024", "standard", "blur"], ["image", "1024x1024", "standard", "blur"]]);
+  assert.deepEqual(baseline.models.map((item) => item.pricePerImage), [.04, .02]);
+
+  const referenceImage = "data:image/png;base64,iVBORw0KGgo=";
+  const imageToImage = newEvaluation({ modelType: "image", imageMode: "image-to-image", imageInstruction: "把背景改成夜晚", referenceImage, models, repeatCount: 3 }, null);
+  assert.equal(imageToImage.imageMode, "image-to-image");
+  assert.equal(imageToImage.datasetId, null);
+  assert.equal(imageToImage.datasetName, "即时图生图输入");
+  assert.deepEqual(imageToImage.cases, [{ id: "IMG-001", input: "把背景改成夜晚", referenceImage }]);
+  assert.equal(imageToImage.totalRuns, 6);
 });
 
 test("multi-dimensional rubrics normalize weights and model summaries expose stability", () => {

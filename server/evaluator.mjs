@@ -1,6 +1,6 @@
 import { randomUUID } from "node:crypto";
 import { decryptSecret } from "./crypto.mjs";
-import { invokeModel } from "./adapters.mjs";
+import { invokeImageModel, invokeModel } from "./adapters.mjs";
 
 const now = () => new Date().toISOString();
 const clamp = (value, minimum, maximum, fallback) => {
@@ -13,9 +13,20 @@ function optionalNumber(value) {
 }
 
 function priceResult(result, modelConfig) {
+  if (modelConfig.modelType === "image") return Number(Number(modelConfig.pricePerImage || 0).toFixed(6));
   const input = (result.inputTokens / 1_000_000) * Number(modelConfig.inputCostPerMillion || 0);
   const output = (result.outputTokens / 1_000_000) * Number(modelConfig.outputCostPerMillion || 0);
   return Number((input + output).toFixed(6));
+}
+
+function imageAssessment(output, rubric) {
+  const failed = !output || output.error || !output.imageUrl;
+  const dimensions = rubric.criteria.map((criterion) => ({
+    criterionId: criterion.id, name: criterion.name, weight: criterion.weight, normalizedWeight: criterion.normalizedWeight,
+    score: failed && criterion.evaluator !== "human" ? 0 : null,
+    reason: failed ? (output?.error || "未生成图片") : "生图结果等待人工复核或匿名盲测",
+  }));
+  return weightedAssessment(dimensions, failed ? "error" : "none", failed ? (output?.error || "未生成图片") : "图片已生成，等待人工复核或匿名盲测");
 }
 
 export function normalizeRubric(rubric = {}) {
@@ -81,6 +92,7 @@ function heuristicAssessment(output, testCase, rubric) {
 
 async function judgeWithModel({ evaluation, output, testCase, state, key }) {
   const rubric = normalizeRubric(evaluation.rubric);
+  if (evaluation.modelType === "image") return imageAssessment(output, rubric);
   const judge = evaluation.judge;
   if (!judge?.enabled || !judge.connectionId || !judge.model) return heuristicAssessment(output, testCase, rubric);
   const connection = state.connections.find((item) => item.id === judge.connectionId);
@@ -153,7 +165,7 @@ export function buildBlindComparisons(evaluation, dataset) {
 export function aggregateModelResults(evaluation) {
   return evaluation.models.map((model) => {
     const results = (evaluation.results || []).filter((item) => item.modelKey === model.key);
-    const scores = results.map((item) => item.assessment?.score).filter(Number.isFinite);
+    const scores = results.map((item) => Number.isFinite(item.humanScore) ? item.humanScore : item.assessment?.score).filter(Number.isFinite);
     const latencies = results.map((item) => Number(item.latencyMs)).filter((item) => item > 0).sort((a, b) => a - b);
     const quality = scores.length ? scores.reduce((sum, item) => sum + item, 0) / scores.length : null;
     const variance = scores.length ? scores.reduce((sum, item) => sum + (item - quality) ** 2, 0) / scores.length : null;
@@ -177,11 +189,12 @@ export function createEvaluationRunner({ store, key }) {
     const initial = store.snapshot();
     const evaluation = initial.evaluations.find((item) => item.id === evaluationId);
     const dataset = initial.datasets.find((item) => item.id === evaluation?.datasetId);
-    if (!evaluation || !dataset) return;
+    if (!evaluation || (!dataset && !(evaluation.cases || []).length)) return;
     await store.mutate((state) => { const current = state.evaluations.find((item) => item.id === evaluationId); current.status = "running"; current.startedAt = now(); });
 
     const repeatCount = Number(evaluation.repeatCount || 1);
-    const jobs = dataset.cases.flatMap((testCase) => evaluation.models.flatMap((modelConfig) => Array.from({ length: repeatCount }, (_, index) => ({ testCase, modelConfig, attempt: index + 1 }))));
+    const cases = evaluation.cases?.length ? evaluation.cases : dataset.cases;
+    const jobs = cases.flatMap((testCase) => evaluation.models.flatMap((modelConfig) => Array.from({ length: repeatCount }, (_, index) => ({ testCase, modelConfig, attempt: index + 1 }))));
     await parallelLimit(jobs, Number(evaluation.concurrency || 4), async ({ testCase, modelConfig, attempt }) => {
       const state = store.snapshot();
       const connection = state.connections.find((item) => item.id === modelConfig.connectionId);
@@ -189,14 +202,23 @@ export function createEvaluationRunner({ store, key }) {
       const seed = modelConfig.seed == null ? null : Number(modelConfig.seed) + attempt - 1;
       try {
         if (!connection) throw new Error("模型连接不存在");
-        result = await invokeModel({
-          connection, apiKey: decryptSecret(connection.encryptedApiKey, key), model: modelConfig.model,
-          input: testCase.input, systemPrompt: modelConfig.systemPrompt ?? evaluation.systemPrompt,
-          temperature: modelConfig.temperature ?? evaluation.temperature, maxTokens: modelConfig.maxTokens ?? evaluation.maxTokens,
-          topP: modelConfig.topP, topK: modelConfig.topK, presencePenalty: modelConfig.presencePenalty,
-          frequencyPenalty: modelConfig.frequencyPenalty, seed, stopSequences: modelConfig.stopSequences,
-          timeoutMs: evaluation.timeoutMs,
-        });
+        if (evaluation.modelType === "image") {
+          result = await invokeImageModel({
+            connection, apiKey: decryptSecret(connection.encryptedApiKey, key), model: modelConfig.model,
+            prompt: testCase.input, referenceImage: testCase.referenceImage || "", negativePrompt: modelConfig.negativePrompt ?? evaluation.negativePrompt,
+            size: modelConfig.size ?? evaluation.size, quality: modelConfig.quality ?? evaluation.quality,
+            style: modelConfig.style ?? evaluation.style, seed, timeoutMs: evaluation.timeoutMs,
+          });
+        } else {
+          result = await invokeModel({
+            connection, apiKey: decryptSecret(connection.encryptedApiKey, key), model: modelConfig.model,
+            input: testCase.input, systemPrompt: modelConfig.systemPrompt ?? evaluation.systemPrompt,
+            temperature: modelConfig.temperature ?? evaluation.temperature, maxTokens: modelConfig.maxTokens ?? evaluation.maxTokens,
+            topP: modelConfig.topP, topK: modelConfig.topK, presencePenalty: modelConfig.presencePenalty,
+            frequencyPenalty: modelConfig.frequencyPenalty, seed, stopSequences: modelConfig.stopSequences,
+            timeoutMs: evaluation.timeoutMs,
+          });
+        }
         result.cost = priceResult(result, modelConfig);
       } catch (error) { result = { text: "", inputTokens: 0, outputTokens: 0, latencyMs: 0, cost: 0, error: error.message }; }
       const assessment = await judgeWithModel({ evaluation, output: result, testCase, state: store.snapshot(), key });
@@ -209,7 +231,7 @@ export function createEvaluationRunner({ store, key }) {
     await store.mutate((state) => {
       const current = state.evaluations.find((item) => item.id === evaluationId);
       current.status = current.results.some((item) => item.error) ? "completed_with_errors" : "completed";
-      current.blindComparisons = buildBlindComparisons(current, dataset);
+      current.blindComparisons = buildBlindComparisons(current, { cases });
       current.modelSummaries = aggregateModelResults(current);
       current.completedAt = now();
     });
@@ -217,6 +239,8 @@ export function createEvaluationRunner({ store, key }) {
 }
 
 export function newEvaluation(payload, dataset) {
+  const modelType = payload.modelType === "image" ? "image" : "text";
+  const imageMode = modelType === "image" && payload.imageMode === "image-to-image" ? "image-to-image" : "text-to-image";
   const comparisonMode = payload.comparisonMode === "optimized" ? "optimized" : "baseline";
   const repeatCount = Math.round(clamp(payload.repeatCount, 3, 5, 3));
   const shared = {
@@ -226,6 +250,8 @@ export function newEvaluation(payload, dataset) {
     seed: optionalNumber(payload.seed),
     stopSequences: Array.isArray(payload.stopSequences) ? payload.stopSequences.map(String).filter(Boolean) : String(payload.stopSequences || "").split("|").map((item) => item.trim()).filter(Boolean),
     systemPrompt: String(payload.systemPrompt || ""),
+    size: ["1024x1024", "1536x1024", "1024x1536", "1792x1024", "1024x1792"].includes(payload.size) ? payload.size : "1024x1024",
+    quality: String(payload.quality || "standard"), style: String(payload.style || ""), negativePrompt: String(payload.negativePrompt || ""),
   };
   const models = (payload.models || []).map((model, index) => {
     const independent = {
@@ -235,20 +261,27 @@ export function newEvaluation(payload, dataset) {
       seed: optionalNumber(model.seed),
       stopSequences: Array.isArray(model.stopSequences) ? model.stopSequences.map(String).filter(Boolean) : String(model.stopSequences || "").split("|").map((item) => item.trim()).filter(Boolean),
       systemPrompt: model.systemPrompt == null ? shared.systemPrompt : String(model.systemPrompt),
+      size: model.size || shared.size, quality: model.quality || shared.quality, style: model.style == null ? shared.style : String(model.style),
+      negativePrompt: model.negativePrompt == null ? shared.negativePrompt : String(model.negativePrompt),
     };
     return {
       ...model, key: model.key || `${model.connectionId}:${model.model}:${index}`,
       ...(comparisonMode === "baseline" ? shared : independent),
-      inputCostPerMillion: Number(model.inputCostPerMillion || 0), outputCostPerMillion: Number(model.outputCostPerMillion || 0),
+      modelType, inputCostPerMillion: Number(model.inputCostPerMillion || 0), outputCostPerMillion: Number(model.outputCostPerMillion || 0),
+      pricePerImage: Number(model.pricePerImage || 0),
     };
   });
+  const cases = imageMode === "image-to-image"
+    ? [{ id: "IMG-001", input: String(payload.imageInstruction || "").trim(), referenceImage: String(payload.referenceImage || "") }]
+    : structuredClone(dataset?.cases || []);
   return {
-    id: randomUUID(), name: payload.name || "未命名评测", datasetId: payload.datasetId, datasetName: dataset.name,
+    id: randomUUID(), name: payload.name || "未命名评测", modelType, imageMode, datasetId: payload.datasetId || null, datasetName: imageMode === "image-to-image" ? "即时图生图输入" : dataset.name, cases,
     status: "queued", comparisonMode, fairnessSnapshot: shared, repeatCount, models,
-    totalRuns: dataset.cases.length * models.length * repeatCount, completedRuns: 0,
+    totalRuns: cases.length * models.length * repeatCount, completedRuns: 0,
     results: [], reviews: [], blindComparisons: [], modelSummaries: [], rubric: normalizeRubric(payload.rubric),
     judge: payload.judge || { enabled: false }, systemPrompt: shared.systemPrompt,
     temperature: shared.temperature, maxTokens: shared.maxTokens,
+    size: shared.size, quality: shared.quality, style: shared.style, negativePrompt: shared.negativePrompt,
     timeoutMs: Math.round(clamp(payload.timeoutMs, 5000, 300000, 60_000)),
     concurrency: Math.round(clamp(payload.concurrency, 1, 12, 4)), createdAt: now(),
   };

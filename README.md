@@ -5,8 +5,8 @@
 <h1 align="center">EvalHub</h1>
 
 <p align="center">
-  用自己的业务测试集，同时比较 2–8 个文本模型。<br>
-  把回答、评分、延迟、Token、估算成本和失败项，收进同一条可复核的模型选型流程。
+  用自己的业务测试集，同时比较 2–8 个文本模型或生图模型。<br>
+  把回答或图片、评分、延迟、估算成本和失败项，收进同一条可复核的模型选型流程。
 </p>
 
 <p align="center">
@@ -35,7 +35,7 @@
 
 ## EvalHub 是什么
 
-EvalHub 是一个可本地部署的文本模型评测工作台，面向需要做模型选型的 AI 产品经理、独立开发者和公司内部团队。它不是另一个多模型聊天界面，而是把 **连接模型 → 导入数据 → 并行运行 → 查看失败 → 人工复核 → 导出报告** 变成一条可重复的流程。
+EvalHub 是一个可本地部署的文本与生图模型评测工作台，面向需要做模型选型的 AI 产品经理、独立开发者和公司内部团队。它不是另一个多模型聊天界面，而是把 **连接模型 → 导入数据 → 并行运行 → 查看失败 → 人工复核 → 导出报告** 变成一条可重复的流程。
 
 模型凭据由用户自己提供（BYOK），测试集、评测结果和加密后的 API Key 默认保存在本地。同一厂商的多个模型型号可以在同一次任务中对比，每个模型也可保存独立的推理参数快照。
 
@@ -55,13 +55,13 @@ EvalHub 的价值不是“接了更多 API”，而是把主观、零散的模�
 
 | 能力 | 当前支持 |
 | --- | --- |
-| 多模型对比 | 同时选择 2–8 个文本模型，支持矩阵、网格和聚焦视图 |
-| 逐模型参数 | Temperature、Max Tokens、Top P、Top K、频率/存在惩罚、Seed、Stop Sequences 和 System Prompt |
-| 模型连接 | OpenAI、Anthropic、Gemini、OpenAI-compatible 与离线 Mock Provider |
+| 多模型对比 | 同时选择 2–8 个同类型模型；文本与生图均支持矩阵、网格和匿名盲测 |
+| 逐模型参数 | 文本支持采样参数与 System Prompt；生图支持文生图、参考图 + 文字指令的图生图，以及尺寸、质量、风格、负向提示词和 Seed |
+| 模型连接 | 文本支持 OpenAI、Anthropic、Gemini、OpenAI-compatible；生图支持 OpenAI Images、Gemini Imagen、OpenAI-compatible 与离线 Mock |
 | 数据集 | CSV、JSON 和 JSONL 导入，支持标签和预期关键词 |
 | 公平对比 | 统一基线模式强制所有模型使用相同参数与 System Prompt；模型优化模式保留逐模型调参 |
 | 重复运行 | 每条用例重复运行 3–5 次，汇总均分、最低分、标准差、通过率、平均/P95 延迟和成本 |
-| 盲测对战 | 同一用例、同一次运行下自动生成全部模型两两组合，匿名 A/B 投票后再揭示身份 |
+| 盲测对战 | 同一用例、同一次运行下自动生成全部模型两两组合；回答或图片匿名 A/B 投票后再揭示身份 |
 | 多维 Rubric | 自定义 1–12 个评分维度、说明、权重和自动/人工方式；LLM Judge 支持逐维评分 |
 | 决策面板 | 质量—成本、质量—P95 延迟散点，约束筛选、Pareto 候选和盲测胜率 |
 | 运行控制 | 并行执行、超时、并发数、固定/递增 Seed 和参数快照 |
@@ -72,7 +72,7 @@ EvalHub 的价值不是“接了更多 API”，而是把主观、零散的模�
 
 ## 使用流程
 
-1. 在 **模型管理 → API 连接** 中添加厂商、API Key 和一个或多个模型 ID。
+1. 在 **模型管理 → API 连接** 中选择文本生成或图片生成，添加厂商、API Key 和一个或多个模型 ID。
 2. 在 **数据集** 中导入 CSV、JSON 或 JSONL 测试用例。
 3. 创建评测任务，选择 2–8 个模型；同一连接下的不同型号也可同时选择。
 4. 选择 **统一基线** 或 **模型优化** 口径，设置每条用例重复 3–5 次，并配置多维 Rubric。
@@ -139,6 +139,10 @@ docker compose up --build
 | Gemini | `https://generativelanguage.googleapis.com` | Gemini generateContent |
 | OpenAI-compatible | 厂商或本地服务地址 | OpenAI-compatible endpoints |
 | Mock | `mock://local` | 离线、可重复的演示输出 |
+
+生图连接支持文生图和图生图。文生图时，OpenAI 与 compatible 连接调用 `POST /images/generations`，Gemini 连接调用 Imagen `:predict`。图生图时，用户上传一张 PNG、JPEG 或 WebP 参考图片（最大 5 MB），并必须填写文字编辑指令；OpenAI 与 compatible 连接调用 multipart `POST /images/edits`，Gemini 模型使用图片与文字联合输入。具体模型是否开放图片编辑能力仍由厂商决定，不支持的型号会在结果中保留接口错误，便于横向识别能力边界。
+
+生图任务会把输入方式、参考图、文字指令和生成参数保存为本地不可变快照，并持久化图片结果（优先保存 API 返回的 base64 data URL）、延迟和单张价格；若厂商只返回临时 HTTPS URL，报告会保留该 URL，其有效期由厂商决定。
 
 应用不会把已保存 API Key 的明文返回给浏览器。连接列表只显示是否已配置密钥以及末四位。
 

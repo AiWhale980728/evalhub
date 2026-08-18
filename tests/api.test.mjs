@@ -108,9 +108,48 @@ test("API validates 2–8 models and completes mock evaluation, review, and CSV 
   const report = await fetch(`${baseUrl}/api/evaluations/${created.id}/report.csv`);
   assert.equal(report.status, 200);
   assert.match(report.headers.get("content-type"), /text\/csv/);
-  assert.match(await report.text(), /case_id,attempt,model,score,dimension_scores/);
+  assert.match(await report.text(), /case_id,attempt,model_type,model,score,dimension_scores/);
   const deletion = await fetch(`${baseUrl}/api/connections/connection-mock`, { method: "DELETE" });
   assert.equal(deletion.status, 409);
+});
+
+test("image-model connections run image comparisons and reject mixed model types", async (t) => {
+  const { server, baseUrl } = await fixture({ demo: true }); t.after(() => server.close());
+  const imageConnection = await json(await fetch(`${baseUrl}/api/connections`, { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ name: "Mock images", provider: "mock", modelType: "image", baseUrl: "mock://images", apiKey: "", models: ["mock-image-art", "mock-image-fast"] }) }));
+  assert.equal(imageConnection.modelType, "image");
+  const state = await json(await fetch(`${baseUrl}/api/state`));
+  const datasetId = state.datasets[0].id;
+  const mixed = await fetch(`${baseUrl}/api/evaluations`, { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ datasetId, models: [{ connectionId: "connection-mock", model: "mock-balanced" }, { connectionId: imageConnection.id, model: "mock-image-art" }] }) });
+  assert.equal(mixed.status, 400);
+
+  const created = await json(await fetch(`${baseUrl}/api/evaluations`, { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ name: "Image comparison", modelType: "image", datasetId, repeatCount: 3, size: "1024x1024", quality: "standard", rubric: { criteria: [{ id: "visual", name: "视觉质量", weight: 1, evaluator: "human" }] }, models: [{ connectionId: imageConnection.id, model: "mock-image-art", key: "art", pricePerImage: .04 }, { connectionId: imageConnection.id, model: "mock-image-fast", key: "fast", pricePerImage: .02 }] }) }));
+  assert.equal(created.modelType, "image");
+  const completed = await waitForEvaluation(baseUrl, created.id);
+  assert.equal(completed.status, "completed");
+  assert.ok(completed.results.every((item) => item.imageUrl.startsWith("data:image/svg+xml")));
+  assert.ok(completed.results.every((item) => item.assessment.score === null));
+  assert.equal(completed.blindComparisons.length, state.datasets[0].cases.length * 3);
+  assert.deepEqual(completed.modelSummaries.map((item) => item.totalCost), [.96, .48]);
+  const first = completed.results[0];
+  await json(await fetch(`${baseUrl}/api/evaluations/${created.id}/reviews`, { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ resultId: first.id, caseId: first.caseId, modelKey: first.modelKey, attempt: first.attempt, verdict: "approved", score: 9.5, notes: "image reviewed" }) }));
+  const reviewed = await json(await fetch(`${baseUrl}/api/evaluations/${created.id}`));
+  assert.equal(reviewed.results.find((item) => item.id === first.id).humanScore, 9.5);
+  assert.equal(reviewed.modelSummaries.find((item) => item.modelKey === first.modelKey).quality, 9.5);
+  const report = await (await fetch(`${baseUrl}/api/evaluations/${created.id}/report.csv`)).text();
+  assert.match(report, /image\/svg\+xml/);
+
+  const imageEditModels = [{ connectionId: imageConnection.id, model: "mock-image-art", key: "edit-art" }, { connectionId: imageConnection.id, model: "mock-image-fast", key: "edit-fast" }];
+  const missingReference = await fetch(`${baseUrl}/api/evaluations`, { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ name: "Missing reference", modelType: "image", imageMode: "image-to-image", imageInstruction: "改成夜景", models: imageEditModels }) });
+  assert.equal(missingReference.status, 400);
+  const referenceImage = "data:image/png;base64,iVBORw0KGgo=";
+  const imageEdit = await json(await fetch(`${baseUrl}/api/evaluations`, { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ name: "Image edit comparison", modelType: "image", imageMode: "image-to-image", imageInstruction: "保留主体，把背景改成夜景", referenceImage, repeatCount: 3, models: imageEditModels }) }));
+  assert.equal(imageEdit.datasetId, null);
+  assert.equal(imageEdit.imageMode, "image-to-image");
+  assert.equal(imageEdit.cases[0].referenceImage, referenceImage);
+  const completedEdit = await waitForEvaluation(baseUrl, imageEdit.id);
+  assert.equal(completedEdit.status, "completed");
+  assert.equal(completedEdit.results.length, 6);
+  assert.ok(completedEdit.results.every((item) => item.imageUrl.startsWith("data:image/svg+xml")));
 });
 
 test("dataset editing, settings, and completed-task deletion are persistent", async (t) => {
